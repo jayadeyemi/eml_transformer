@@ -28,7 +28,7 @@ def _p(*parts: str) -> str:
 @dataclass(frozen=True)
 class StoragePaths:
     """
-    Key layout for QBT artifacts.
+    Key layout for EML Transformer artifacts.
 
     Notes
     -----

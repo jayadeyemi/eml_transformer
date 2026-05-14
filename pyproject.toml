@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eml_text_pipeline"
+name = "eml_transformer"
 version = "0.1.0"
 dependencies = [
     "pandas",
@@ -17,4 +17,4 @@ dependencies = [
 where = ["src"]
 
 [project.scripts]
-eml-pipeline = "eml_text_pipeline.cli:app"
+eml_transformer = "eml_transformer.cli:app"

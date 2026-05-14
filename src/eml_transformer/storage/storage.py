@@ -7,12 +7,11 @@ import json
 import pickle
 import uuid
 
-from qbt.core.logging import get_logger
+from eml_transformer.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-import s3fs
 import pandas as pd
 import pyarrow.parquet as pq
 

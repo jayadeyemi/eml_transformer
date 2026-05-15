@@ -3,157 +3,223 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-import eml_transformer.ingestion.sources  # noqa: F401 - triggers registry
+import eml_transformer.ingestion.sources  # noqa: F401
 from eml_transformer.ingestion.registry import create_source
-
+from eml_transformer.storage.paths import StoragePaths
+from eml_transformer.storage.storage import Storage
+from eml_transformer.utils.stamping import stable_hash
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class IngestionResult:
+    status: str
     source: str
     run_id: str
-    status: str
-    records: pd.DataFrame
+    records_fetched: int
+    records_new: int
+    records_skipped: int
     records_out: int
-    output_path: Path | None
-    started_at: datetime
-    finished_at: datetime
+    records_failed: int = 0
+    bronze_key: str | None = None
+    silver_key: str | None = None
+    dedupe_key: str | None = None
     error: str | None = None
+    records: pd.DataFrame | None = None
 
 
 class IngestionPipeline:
-    """
-    Orchestrates ingestion for one or more text sources.
-
-    Source classes handle:
-        - fetch_raw()
-        - parse_records()
-        - standardize_record()
-
-    This pipeline handles:
-        - creating sources from registry
-        - running sources
-        - logging
-        - writing results
-        - returning run metadata
-    """
-
     def __init__(
         self,
-        output_dir: str | Path = "data/silver/text_events",
-        write_output: bool = False,
-    ) -> None:
-        self.output_dir = Path(output_dir)
-        self.write_output = write_output
+        storage: Storage,
+        paths: StoragePaths,
+    ):
+        self.storage = storage
+        self.paths = paths
+
+    def run_all(
+        self,
+        source_configs: dict[str, dict],
+    ) -> list[IngestionResult]:
+        return [
+            self.run_source(source_name, source_kwargs)
+            for source_name, source_kwargs in source_configs.items()
+        ]
 
     def run_source(
         self,
         source_name: str,
-        source_kwargs: dict[str, Any] | None = None,
+        source_kwargs: dict[str, Any],
     ) -> IngestionResult:
-        source_kwargs = source_kwargs or {}
+        run_time = datetime.now(timezone.utc)
+        run_id = run_time.strftime("%Y%m%dT%H%M%SZ")
 
-        started_at = datetime.now(timezone.utc)
-        run_id = started_at.strftime("%Y%m%dT%H%M%SZ")
-
-        logger.info(
-            "Starting ingestion for source=%s run_id=%s",
-            source_name,
-            run_id,
-        )
+        bronze_key: str | None = None
+        silver_key: str | None = None
+        dedupe_key: str | None = None
 
         try:
             source = create_source(source_name, **source_kwargs)
-            df = source.run()
+            run_time = datetime.now(timezone.utc)
 
-            output_path = None
+            run_id = run_time.strftime("%Y%m%dT%H%M%SZ")
 
-            if self.write_output:
-                output_path = self._write_output(
-                    df=df,
-                    source_name=source_name,
-                    run_id=run_id,
-                )
-
-            finished_at = datetime.now(timezone.utc)
-
-            logger.info(
-                "Finished ingestion for source=%s run_id=%s records=%s",
-                source_name,
-                run_id,
-                len(df),
+            ingest_date = run_time.strftime("%Y-%m-%d")
+            bronze_key = self.paths.bronze_records(
+                source=source.name,
+                ingest_date=ingest_date,
             )
 
+            silver_key = self.paths.silver_records(
+                source=source.name,
+                ingest_date=ingest_date,
+            )
+            dedupe_key = self.paths.dedupe_state(source.name)
+
+            raw = source.fetch_raw()
+            raw_records = source.parse_records(raw)
+
+            seen = self._load_seen(dedupe_key)
+            new_seen = set(seen)
+
+            bronze_rows: list[dict[str, Any]] = []
+            silver_records = []
+            failed_records = 0
+
+            for raw_record in raw_records:
+                try:
+                    text_record = source.standardize_record(raw_record)
+
+                    h = stable_hash(raw_record)
+                    unique_key = f"{text_record.record_id}:{h}"
+
+                    if unique_key in seen:
+                        continue
+
+                    bronze_rows.append(
+                        {
+                            "source": source.name,
+                            "record_id": text_record.record_id,
+                            "content_hash": h,
+                            "dedupe_key": unique_key,
+                            "retrieved_at": run_time.isoformat(),
+                            "run_id": run_id,
+                            "raw": raw_record,
+                        }
+                    )
+
+                    silver_records.append(text_record)
+                    new_seen.add(unique_key)
+
+                except Exception:
+                    failed_records += 1
+                    logger.exception(
+                        "Failed to standardize raw record | source=%s",
+                        source.name,
+                    )
+
+            if bronze_rows:
+                self.storage.append_jsonl(bronze_rows, bronze_key)
+
+            df_new = self._records_to_dataframe(silver_records)
+
+            if not df_new.empty:
+                self._upsert_silver(df_new, silver_key)
+
+            self._save_seen(dedupe_key, new_seen)
+
             return IngestionResult(
-                source=source_name,
-                run_id=run_id,
                 status="success",
-                records=df,
-                records_out=len(df),
-                output_path=output_path,
-                started_at=started_at,
-                finished_at=finished_at,
+                source=source.name,
+                run_id=run_id,
+                records_fetched=len(raw_records),
+                records_new=len(bronze_rows),
+                records_skipped=len(raw_records) - len(bronze_rows) - failed_records,
+                records_out=len(df_new),
+                records_failed=failed_records,
+                bronze_key=bronze_key,
+                silver_key=silver_key,
+                dedupe_key=dedupe_key,
+                records=df_new,
             )
 
-        except Exception as exc:
-            finished_at = datetime.now(timezone.utc)
-
+        except Exception as e:
             logger.exception(
-                "Ingestion failed for source=%s run_id=%s",
+                "Ingestion failed | source=%s run_id=%s",
                 source_name,
                 run_id,
             )
 
             return IngestionResult(
+                status="failed",
                 source=source_name,
                 run_id=run_id,
-                status="failed",
-                records=pd.DataFrame(),
+                records_fetched=0,
+                records_new=0,
+                records_skipped=0,
                 records_out=0,
-                output_path=None,
-                started_at=started_at,
-                finished_at=finished_at,
-                error=str(exc),
+                error=str(e),
+                bronze_key=bronze_key,
+                silver_key=silver_key,
+                dedupe_key=dedupe_key,
             )
 
-    def run_many(
-        self,
-        sources: dict[str, dict[str, Any] | None],
-    ) -> list[IngestionResult]:
-        results: list[IngestionResult] = []
+    def _records_to_dataframe(self, records: list[Any]) -> pd.DataFrame:
+        if not records:
+            return pd.DataFrame()
 
-        for source_name, source_kwargs in sources.items():
-            result = self.run_source(
-                source_name=source_name,
-                source_kwargs=source_kwargs or {},
-            )
-            results.append(result)
+        rows = []
 
-        return results
+        for record in records:
+            if hasattr(record, "model_dump"):
+                rows.append(record.model_dump())
+            elif hasattr(record, "dict"):
+                rows.append(record.dict())
+            else:
+                rows.append(record)
 
-    def _write_output(
-        self,
-        df: pd.DataFrame,
-        source_name: str,
-        run_id: str,
-    ) -> Path:
-        output_path = (
-            self.output_dir
-            / f"source={source_name}"
-            / f"run_id={run_id}"
-            / "records.parquet"
+        return pd.DataFrame(rows)
+
+    def _load_seen(self, key: str) -> set[str]:
+        if not self.storage.exists(key):
+            return set()
+
+        state = self.storage.read_json(key)
+        return set(state.get("seen", []))
+
+    def _save_seen(self, key: str, seen: set[str]) -> None:
+        self.storage.write_json(
+            {
+                "seen": sorted(seen),
+                "count": len(seen),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            key,
         )
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        df.drop(columns=['text', 'raw']).to_csv(output_path, index=False)
+    def _upsert_silver(
+        self,
+        df_new: pd.DataFrame,
+        key: str,
+    ) -> None:
+        if self.storage.exists(key):
+            df_old = self.storage.csv(key)
 
-        logger.info("Wrote ingestion output to %s", output_path)
+            df = pd.concat(
+                [df_old, df_new],
+                ignore_index=True,
+            )
 
-        return output_path
+            df = df.drop_duplicates(
+                subset=["record_id"],
+                keep="last",
+            )
+        else:
+            df = df_new
+
+        self.storage.write_csv(df, key)

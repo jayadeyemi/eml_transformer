@@ -38,6 +38,20 @@ class Storage:
         logger.info(f"Writing {len(df)} rows to {key}")
         raise NotImplementedError
 
+    def read_csv(self, key: str) -> pd.DataFrame:
+        logger.debug(f"reading csv file: {key}")
+        raise NotImplementedError
+
+    def write_csv(
+        self,
+        df: pd.DataFrame,
+        key: str,
+        index: bool = False,
+    ) -> None:
+        logger.info(f"Writing {len(df)} rows to csv {key}")
+        raise NotImplementedError
+    
+
     def read_json(self, key: str) -> Any:
         logger.debug(f"reading file: {key}")
         raise NotImplementedError
@@ -98,7 +112,39 @@ class LocalStorage(Storage):
         tmp = path.with_suffix(path.suffix + ".tmp")
         df.to_parquet(tmp, index=True)
         tmp.replace(path)
+    
 
+    # =====================
+    # CSV
+    # =====================
+
+    def read_csv(self, key: str) -> pd.DataFrame:
+        return pd.read_csv(self._path(key))
+
+
+    def write_csv(
+        self,
+        df: pd.DataFrame,
+        key: str,
+        index: bool = False,
+    ) -> None:
+        path = self._path(key)
+
+        path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        tmp = path.with_suffix(
+            path.suffix + ".tmp"
+        )
+
+        df.to_csv(
+            tmp,
+            index=index,
+        )
+
+        tmp.replace(path)
     # =====================
     # JSON
     # =====================
@@ -115,6 +161,16 @@ class LocalStorage(Storage):
             json.dump(obj, f, indent=2, sort_keys=True, default=str)
         tmp.replace(path)
 
+    def append_jsonl(self, records: list[dict[str, Any]], key: str) -> None:
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with path.open("a", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+    
+    
+    
     # =====================
     # Pickle
     # =====================
@@ -237,7 +293,54 @@ class S3Storage(Storage):
             self._fs.rm(src)
         except Exception:
             pass
+    
+    # =====================
+    # CSV
+    # =====================
 
+    def read_csv(self, key: str) -> pd.DataFrame:
+        self._init_fs()
+
+        return pd.read_csv(
+            self._uri(key),
+            storage_options={
+                "profile": self.profile,
+            } if self.profile else None,
+        )
+
+
+    def write_csv(
+        self,
+        df: pd.DataFrame,
+        key: str,
+        index: bool = False,
+    ) -> None:
+        self._init_fs()
+
+        tmp_key = (
+            f"{self._key(key)}"
+            f".__tmp__{uuid.uuid4().hex}"
+        )
+
+        tmp_uri = f"s3://{self.bucket}/{tmp_key}"
+
+        df.to_csv(
+            tmp_uri,
+            index=index,
+            storage_options={
+                "profile": self.profile,
+            } if self.profile else None,
+        )
+
+        src = f"{self.bucket}/{tmp_key}"
+        dst = f"{self.bucket}/{self._key(key)}"
+
+        self._fs.copy(src, dst)
+
+        try:
+            self._fs.rm(src)
+        except Exception:
+            pass
 
     def read_json(self, key: str) -> Any:
         self._init_fs()

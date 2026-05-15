@@ -4,12 +4,24 @@ import pandas as pd
 import typer
 from dotenv import load_dotenv
 
-from eml_transformer.ingestion.registry import available_sources
-from eml_transformer.pipelines.ingestion_pipeline import IngestionPipeline
+from datetime import date, datetime, timedelta
+from copy import deepcopy
 
+
+
+from eml_transformer.ingestion.registry import (
+    available_sources,
+)
+from eml_transformer.pipelines.ingestion_pipeline import (
+    IngestionPipeline,
+)
+from eml_transformer.storage.paths import StoragePaths
+from eml_transformer.storage.storage import make_storage
+from eml_transformer.utils.config import load_ingestion_config
 load_dotenv()
 
 app = typer.Typer()
+
 
 
 SOURCE_ALIASES = {
@@ -18,6 +30,63 @@ SOURCE_ALIASES = {
     "news": "newsapi",
 }
 
+
+def build_pipeline(cfg: dict) -> IngestionPipeline:
+    storage = make_storage(cfg["storage"])
+
+    paths = StoragePaths(
+        root=cfg.get("paths", {}).get("root", ".")
+    )
+
+    return IngestionPipeline(
+        storage=storage,
+        paths=paths,
+    )
+
+def build_source_config(
+    source: str,
+    cfg: dict,
+) -> tuple[str, dict]:
+    source_key = source.lower()
+    source_name = SOURCE_ALIASES.get(source_key, source_key)
+
+    sources_cfg = cfg["sources"]
+
+    if source_name not in sources_cfg:
+        valid = ", ".join(sources_cfg.keys())
+        raise typer.BadParameter(
+            f"Unknown source: {source}. Available sources: {valid}"
+        )
+
+    source_cfg = dict(sources_cfg[source_name])
+
+    source_cfg.pop("enabled", None)
+
+    api_key_env = source_cfg.pop("api_key_env", None)
+
+    if api_key_env:
+        api_key = os.getenv(api_key_env)
+
+        if not api_key:
+            raise typer.BadParameter(
+                f"Missing required environment variable: {api_key_env}"
+            )
+
+        source_cfg["api_key"] = api_key
+
+    return source_name, source_cfg
+
+def build_source_configs(cfg: dict) -> dict[str, dict]:
+    configs = {}
+
+    for source_name, source_cfg in cfg["sources"].items():
+        if not source_cfg.get("enabled", True):
+            continue
+
+        name, kwargs = build_source_config(source_name, cfg)
+        configs[name] = kwargs
+
+    return configs
 
 def print_ingestion_preview(
     df: pd.DataFrame,
@@ -33,102 +102,143 @@ def print_ingestion_preview(
 
     for i, row in df.head(n).iterrows():
         typer.echo(f"\nRecord {i + 1}")
-        typer.echo(f"Title: {row.get('title')}")
-        typer.echo(f"Published: {row.get('published_at')}")
-        typer.echo(f"URL: {row.get('url')}")
+
+        typer.echo(
+            f"Title: {row.get('title')}"
+        )
+
+        typer.echo(
+            f"Published: {row.get('published_at')}"
+        )
+
+        typer.echo(
+            f"URL: {row.get('url')}"
+        )
+
         typer.echo("\nText snippet:")
-        typer.echo((row.get("text") or "")[:1000])
+
+        typer.echo(
+            (row.get("text") or "")[:1000]
+        )
+
         typer.echo("-" * 90)
 
 
 @app.command()
 def ingest(
-    source: str = typer.Option(..., help="Source name or alias."),
-    output_dir: str = typer.Option("data/silver/text_events"),
-    query: str = typer.Option('''
-
-        (
-            "Midcontinent Independent System Operator"
-            OR ERCOT
-            OR PJM
-        )
-        AND
-        (
-            electricity
-            OR grid
-            OR "power market"
-            OR transmission
-        )
-
-'''),
-    area: str | None = typer.Option(None),
-    api_key: str | None = typer.Option(None),
-    write_output: bool = typer.Option(False),
+    source: str = typer.Option(...),
+    config: str = typer.Option("configs/ingestion.yaml"),
     preview: bool = typer.Option(True),
 ):
-    source_key = source.lower()
-    source_name = SOURCE_ALIASES.get(source_key, source_key)
+    cfg = load_ingestion_config(config)
 
-    source_kwargs = {}
-
-    if source_name == "newsapi":
-        newsapi_key = api_key or os.getenv("NEWSAPI_KEY")
-
-        if not newsapi_key:
-            raise typer.BadParameter(
-                "Missing NewsAPI key. Pass --api-key or set NEWSAPI_KEY in .env"
-            )
-
-        source_kwargs = {
-            "api_key": newsapi_key,
-            "query": query,
-        }
-
-    elif source_name == "weather_alerts":
-        if area:
-            source_kwargs = {
-                "area": area,
-            }
-
-    elif source_name == "miso_notifications":
-        source_kwargs = {}
-
-    else:
-        valid = ", ".join(available_sources())
-        raise typer.BadParameter(
-            f"Unknown source: {source}. Available sources: {valid}"
+    pipeline = build_pipeline(cfg)
+    if source.lower() == "all":
+        results = pipeline.run_all(
+            build_source_configs(cfg)
         )
 
-    pipeline = IngestionPipeline(
-        output_dir=output_dir,
-        write_output=write_output,
-    )
+    else:
+        source_name, source_kwargs = build_source_config(
+            source,
+            cfg,
+        )
 
-    result = pipeline.run_source(
-        source_name=source_name,
-        source_kwargs=source_kwargs,
-    )
+        results = [
+            pipeline.run_source(
+                source_name=source_name,
+                source_kwargs=source_kwargs,
+            )
+        ]
 
-    if result.status == "failed":
-        raise typer.Exit(f"Ingestion failed: {result.error}")
-
-    typer.echo(f"Status: {result.status}")
-    typer.echo(f"Source: {result.source}")
-    typer.echo(f"Run ID: {result.run_id}")
-    typer.echo(f"Records: {result.records_out}")
-
-    if result.output_path:
-        typer.echo(f"Saved to: {result.output_path}")
-
-    if preview:
-        print_ingestion_preview(result.records, source_name)
-
+    print(results)
 
 @app.command()
 def sources():
     typer.echo("Available sources:")
+
     for source in available_sources():
         typer.echo(f"- {source}")
+
+
+
+def date_windows(start: date, end: date, days: int):
+    cur = start
+
+    while cur <= end:
+        window_end = min(cur + timedelta(days=days - 1), end)
+        yield cur.isoformat(), window_end.isoformat()
+        cur = window_end + timedelta(days=1)
+
+
+@app.command()
+def backfill(
+    source: str = typer.Option(...),
+    start: str = typer.Option(..., help="YYYY-MM-DD"),
+    end: str = typer.Option(
+        date.today().isoformat(),
+        help="YYYY-MM-DD",
+    ),
+    window_days: int = typer.Option(7),
+    config: str = typer.Option("configs/ingestion.yaml"),
+):
+    """
+    Backfill a source over date windows.
+
+    Example:
+        eml-pipeline backfill --source news --start 2024-01-01 --end 2024-06-01
+    """
+
+    cfg = load_ingestion_config(config)
+    pipeline = build_pipeline(cfg)
+
+    source_name, base_kwargs = build_source_config(
+        source,
+        cfg,
+    )
+
+    if source_name not in {"newsapi"}:
+        raise typer.BadParameter(
+            f"Backfill is only supported for date-windowed sources for now. "
+            f"Got: {source_name}"
+        )
+
+    start_date = datetime.strptime(start, "%Y-%m-%d").date()
+    end_date = datetime.strptime(end, "%Y-%m-%d").date()
+
+    all_results = []
+
+    for window_start, window_end in date_windows(
+        start=start_date,
+        end=end_date,
+        days=window_days,
+    ):
+        typer.echo(
+            f"\nBackfilling {source_name}: {window_start} to {window_end}"
+        )
+
+        source_kwargs = deepcopy(base_kwargs)
+
+        source_kwargs["from_date"] = window_start
+        source_kwargs["to_date"] = window_end
+
+        result = pipeline.run_source(
+            source_name=source_name,
+            source_kwargs=source_kwargs,
+        )
+
+        all_results.append(result)
+
+        typer.echo(
+            f"Status={result.status} | "
+            f"Fetched={result.records_fetched} | "
+            f"New={result.records_new} | "
+            f"Skipped={result.records_skipped}"
+        )
+
+    typer.echo("\nBackfill complete.")
+    typer.echo(f"Windows processed: {len(all_results)}")
+
 
 
 if __name__ == "__main__":

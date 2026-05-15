@@ -1,0 +1,36 @@
+storage:
+  backend: local
+  base_dir: data
+
+paths:
+  root: .
+
+sources:
+  newsapi:
+    enabled: true
+    api_key_env: NEWSAPI_KEY
+    query: >
+      (
+        "Midcontinent Independent System Operator"
+        OR ERCOT
+        OR PJM
+      )
+      AND
+      (
+        electricity
+        OR grid
+        OR "power market"
+        OR transmission
+      )
+    language: en
+    page_size: 100
+
+  miso_notifications:
+    enabled: true
+
+  weather_alerts:
+    enabled: true
+    areas: 
+      ["IN", "IL", "MI", "OH", "KY",
+      "WI", "MN", "IA", "MO", "AR",
+      "LA", "MS", "ND", "SD"]

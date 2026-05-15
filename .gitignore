@@ -9,3 +9,11 @@
 build/
 dist/
 *.egg-info/
+
+
+data/*
+*.parquet
+*.csv
+
+
+DEBUG.ipynb

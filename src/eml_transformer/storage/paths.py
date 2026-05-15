@@ -1,18 +1,11 @@
-# src/qbt/storage/paths.py
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Optional
 
 
 def _clean(x: str) -> str:
-    """
-    Make a string safe for partition-style paths (strategy=..., etc.).
-    Keep it predictable across local FS + S3.
-    """
     return (
-        str(x).strip()
+        str(x)
+        .strip()
         .replace(" ", "_")
         .replace("/", "-")
         .replace("\\", "-")
@@ -21,23 +14,59 @@ def _clean(x: str) -> str:
 
 
 def _p(*parts: str) -> str:
-    """Join POSIX key parts safely."""
     return str(PurePosixPath(*parts))
 
 
 @dataclass(frozen=True)
 class StoragePaths:
-    """
-    Key layout for EML Transformer artifacts.
+    root: str = "data"
 
-    Notes
-    -----
-    - All functions return *keys* (POSIX-like strings), not local filesystem Paths.
-    - Storage backend maps keys -> local paths or S3 URIs.
-    - Partition style: key=val folders for query-friendly datasets.
-    """
+    # ------------------------------------------------------------------
+    # Bronze
+    # ------------------------------------------------------------------
 
-    # ---------------------------------------------------------------------
-    # Data construction pipeline
-    # ---------------------------------------------------------------------
-  
+    def bronze_records(
+        self,
+        source: str,
+        ingest_date: str,
+    ) -> str:
+        return _p(
+            self.root,
+            "bronze",
+            f"source={_clean(source)}",
+            f"ingest_date={ingest_date}",
+            "records.jsonl",
+        )
+
+    # ------------------------------------------------------------------
+    # Silver
+    # ------------------------------------------------------------------
+
+    def silver_records(
+        self,
+        source: str,
+        ingest_date: str,
+    ) -> str:
+        return _p(
+            self.root,
+            "silver",
+            "text_records",
+            f"source={_clean(source)}",
+            f"ingest_date={ingest_date}",
+            "records.csv",
+        )
+
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
+
+    def dedupe_state(
+        self,
+        source: str,
+    ) -> str:
+        return _p(
+            self.root,
+            "metadata",
+            "dedupe",
+            f"source={_clean(source)}.json",
+        )

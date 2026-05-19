@@ -168,7 +168,28 @@ class LocalStorage(Storage):
         with path.open("a", encoding="utf-8") as f:
             for record in records:
                 f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
-    
+
+    def read_jsonl(
+        self,
+        key: str,
+    ) -> list[dict[str, Any]]:
+        path = self._path(key)
+
+        if not path.exists():
+            return []
+
+        rows = []
+
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                rows.append(json.loads(line))
+
+        return rows
     
     
     # =====================

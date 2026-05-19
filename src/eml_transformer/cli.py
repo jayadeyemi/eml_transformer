@@ -4,89 +4,27 @@ import pandas as pd
 import typer
 from dotenv import load_dotenv
 
-from datetime import date, datetime, timedelta
-from copy import deepcopy
-
 
 
 from eml_transformer.ingestion.registry import (
     available_sources,
 )
+
 from eml_transformer.pipelines.ingestion_pipeline import (
     IngestionPipeline,
 )
-from eml_transformer.storage.paths import StoragePaths
-from eml_transformer.storage.storage import make_storage
-from eml_transformer.utils.config import load_ingestion_config
+from eml_transformer.pipelines.embedding_pipeline import ( 
+    EmbeddingPipeline
+)
+from eml_transformer.pipelines.standardization_pipeline import (
+    StandardizationPipeline
+)
+
+from eml_transformer.runtime import build_runtime
+
 load_dotenv()
 
 app = typer.Typer()
-
-
-
-SOURCE_ALIASES = {
-    "miso": "miso_notifications",
-    "weather": "weather_alerts",
-    "news": "newsapi",
-}
-
-
-def build_pipeline(cfg: dict) -> IngestionPipeline:
-    storage = make_storage(cfg["storage"])
-
-    paths = StoragePaths(
-        root=cfg.get("paths", {}).get("root", ".")
-    )
-
-    return IngestionPipeline(
-        storage=storage,
-        paths=paths,
-    )
-
-def build_source_config(
-    source: str,
-    cfg: dict,
-) -> tuple[str, dict]:
-    source_key = source.lower()
-    source_name = SOURCE_ALIASES.get(source_key, source_key)
-
-    sources_cfg = cfg["sources"]
-
-    if source_name not in sources_cfg:
-        valid = ", ".join(sources_cfg.keys())
-        raise typer.BadParameter(
-            f"Unknown source: {source}. Available sources: {valid}"
-        )
-
-    source_cfg = dict(sources_cfg[source_name])
-
-    source_cfg.pop("enabled", None)
-
-    api_key_env = source_cfg.pop("api_key_env", None)
-
-    if api_key_env:
-        api_key = os.getenv(api_key_env)
-
-        if not api_key:
-            raise typer.BadParameter(
-                f"Missing required environment variable: {api_key_env}"
-            )
-
-        source_cfg["api_key"] = api_key
-
-    return source_name, source_cfg
-
-def build_source_configs(cfg: dict) -> dict[str, dict]:
-    configs = {}
-
-    for source_name, source_cfg in cfg["sources"].items():
-        if not source_cfg.get("enabled", True):
-            continue
-
-        name, kwargs = build_source_config(source_name, cfg)
-        configs[name] = kwargs
-
-    return configs
 
 def print_ingestion_preview(
     df: pd.DataFrame,
@@ -123,36 +61,6 @@ def print_ingestion_preview(
 
         typer.echo("-" * 90)
 
-
-@app.command()
-def ingest(
-    source: str = typer.Option(...),
-    config: str = typer.Option("configs/ingestion.yaml"),
-    preview: bool = typer.Option(True),
-):
-    cfg = load_ingestion_config(config)
-
-    pipeline = build_pipeline(cfg)
-    if source.lower() == "all":
-        results = pipeline.run_all(
-            build_source_configs(cfg)
-        )
-
-    else:
-        source_name, source_kwargs = build_source_config(
-            source,
-            cfg,
-        )
-
-        results = [
-            pipeline.run_source(
-                source_name=source_name,
-                source_kwargs=source_kwargs,
-            )
-        ]
-
-    print(results)
-
 @app.command()
 def sources():
     typer.echo("Available sources:")
@@ -162,83 +70,91 @@ def sources():
 
 
 
-def date_windows(start: date, end: date, days: int):
-    cur = start
-
-    while cur <= end:
-        window_end = min(cur + timedelta(days=days - 1), end)
-        yield cur.isoformat(), window_end.isoformat()
-        cur = window_end + timedelta(days=1)
-
-
 @app.command()
-def backfill(
+def ingest(
     source: str = typer.Option(...),
-    start: str = typer.Option(..., help="YYYY-MM-DD"),
-    end: str = typer.Option(
-        date.today().isoformat(),
-        help="YYYY-MM-DD",
-    ),
-    window_days: int = typer.Option(7),
-    config: str = typer.Option("configs/ingestion.yaml"),
+    config: str = typer.Option("configs/dev.yaml"),
+    preview: bool = typer.Option(True),
 ):
-    """
-    Backfill a source over date windows.
+    rt = build_runtime(config)
 
-    Example:
-        eml-pipeline backfill --source news --start 2024-01-01 --end 2024-06-01
-    """
-
-    cfg = load_ingestion_config(config)
-    pipeline = build_pipeline(cfg)
-
-    source_name, base_kwargs = build_source_config(
-        source,
-        cfg,
+    pipeline = IngestionPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
     )
 
-    if source_name not in {"newsapi"}:
-        raise typer.BadParameter(
-            f"Backfill is only supported for date-windowed sources for now. "
-            f"Got: {source_name}"
-        )
 
-    start_date = datetime.strptime(start, "%Y-%m-%d").date()
-    end_date = datetime.strptime(end, "%Y-%m-%d").date()
+    if source.lower() == "all":
+        results = pipeline.run_all(rt.source_configs)
+    else:
+        source_config = rt.source_configs[source]
+        results = [pipeline.run_source(source, source_config)]
 
-    all_results = []
+    typer.echo(results)
 
-    for window_start, window_end in date_windows(
-        start=start_date,
-        end=end_date,
-        days=window_days,
-    ):
-        typer.echo(
-            f"\nBackfilling {source_name}: {window_start} to {window_end}"
-        )
 
-        source_kwargs = deepcopy(base_kwargs)
 
-        source_kwargs["from_date"] = window_start
-        source_kwargs["to_date"] = window_end
+@app.command("standardize")
+def clean_standardize(
+    source: str = typer.Option("all"),
+    config: str = typer.Option("configs/dev.yaml"),
+):
+    rt = build_runtime(config)
 
-        result = pipeline.run_source(
-            source_name=source_name,
-            source_kwargs=source_kwargs,
-        )
+    pipeline = StandardizationPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+    )
 
-        all_results.append(result)
+    if source.lower() == "all":
+        results = pipeline.run_all(rt.source_configs)
+    else:
+        source_config = rt.source_configs[source]
+        results = [pipeline.run_source(source, source_config)]
 
-        typer.echo(
-            f"Status={result.status} | "
-            f"Fetched={result.records_fetched} | "
-            f"New={result.records_new} | "
-            f"Skipped={result.records_skipped}"
-        )
+    typer.echo(results)
 
-    typer.echo("\nBackfill complete.")
-    typer.echo(f"Windows processed: {len(all_results)}")
+@app.command()
+def embed(
+    config: str = typer.Option("configs/dev.yaml"),
+):
+    rt = build_runtime(config)
 
+    pipeline = EmbeddingPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+    )
+
+    result = pipeline.run(rt.embeddings)
+
+    typer.echo(result)
+
+
+@app.command("run-all")
+def run_all(
+    config: str = typer.Option("configs/pipeline.yaml"),
+):
+    rt = build_runtime(config)
+
+    IngestionPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+        config=rt.ingestion_config,
+    ).run_all(rt.source_configs)
+
+    StandardizationPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+        config=rt.standardization_config,
+    ).run_all(rt.source_configs)
+
+    EmbeddingPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+        config=rt.embedding_config,
+    ).run()
+
+    typer.echo("Pipeline complete.")
 
 
 if __name__ == "__main__":

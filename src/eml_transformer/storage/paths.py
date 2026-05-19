@@ -28,7 +28,7 @@ class StoragePaths:
     def bronze_records(
         self,
         source: str,
-        ingest_date: str,
+        # ingest_date: str,
     ) -> str:
         return _p(
             self.root,
@@ -45,7 +45,7 @@ class StoragePaths:
     def silver_records(
         self,
         source: str,
-        ingest_date: str,
+        # ingest_date: str,
     ) -> str:
         return _p(
             self.root,

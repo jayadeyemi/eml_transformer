@@ -34,7 +34,7 @@ class StoragePaths:
             self.root,
             "bronze",
             f"source={_clean(source)}",
-            f"ingest_date={ingest_date}",
+            # f"ingest_date={ingest_date}",
             "records.jsonl",
         )
 
@@ -52,7 +52,7 @@ class StoragePaths:
             "silver",
             "text_records",
             f"source={_clean(source)}",
-            f"ingest_date={ingest_date}",
+            # f"ingest_date={ingest_date}",
             "records.csv",
         )
 

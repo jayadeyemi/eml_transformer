@@ -1,0 +1,7 @@
+help:
+	@echo "Available commands:"
+	@echo "  make setup"
+
+setup:
+	python -m pip install -r requirements.txt
+	python -m pip install -e .

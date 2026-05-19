@@ -12,29 +12,6 @@ This project collects and standardizes textual data sources such as:
 - NewsAPI articles
 - National Weather Service alerts
 
-The pipeline supports:
-
-- Incremental ingestion
-- Deduplication
-- Bronze/Silver storage layers
-- Embedding-ready outputs
-- Research workflows for energy forecasting
-
-
-# Repository Structure
-
-```text
-eml_transformer/
-├── docs/
-├── src/
-├── configs/
-├── data/
-│   ├── bronze/
-│   ├── silver/
-│   └── gold/
-├── scripts/
-└── README.md
-```
 
 
 # Quick Start
@@ -159,7 +136,7 @@ docs/
 
 Important guides:
 
+- `docs/design_principles.md`
+- `docs/project_structure` 
 - `docs/ingestion_pipeline.md`
-- `docs/add_new_source.md`
-- `docs/architecture` philosophy behind code architecture
 

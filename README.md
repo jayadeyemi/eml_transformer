@@ -137,6 +137,16 @@ eml_transformer embed \
     --model sentence-transformers/all-mpnet-base-v2
 ```
 
+## Backfilling Historical Data 
+
+Some api sources archive historical data. To back fill historical data run 
+
+```bash
+eml_transformer backfill   --source newsapi   --start-date 2026-04-20   --end-date 2026-05-20   --window-days 7
+```
+
+** this command is limited to data sources with supports_backfill=True and is also rate limited depending on source 
+
 # Output Structure
 
 ### Bronze Layer

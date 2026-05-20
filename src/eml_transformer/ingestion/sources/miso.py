@@ -8,7 +8,7 @@ from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord, utc_now
 
 
-@register_source("miso")
+@register_source("miso_notifications")
 class MISONotificationSource(TextSource):
     name = "miso_notifications"
     source_type = "api"
@@ -32,7 +32,7 @@ class MISONotificationSource(TextSource):
             "Referer": "https://www.misoenergy.org/markets-and-operations/notifications/",
         }
 
-    def fetch_raw(self) -> Any:
+    def fetch_raw(self, from_date=None, to_date=None) -> Any:
         params = {
             "topic": self.topic,
             "take": self.take,

@@ -41,7 +41,7 @@ class WeatherAlertSource(TextSource):
             "Accept": "application/geo+json",
         }
 
-    def fetch_raw(self) -> list[dict[str, Any]]:
+    def fetch_raw(self, from_date=None, to_date=None) -> list[dict[str, Any]]:
         responses = []
 
         for area in self.areas:

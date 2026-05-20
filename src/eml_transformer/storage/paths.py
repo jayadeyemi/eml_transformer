@@ -89,3 +89,14 @@ class StoragePaths:
             "dedupe",
             f"source={_clean(source)}.json",
         )
+    
+    def checkpoint_key(
+        self, 
+        source: str
+    ):
+        return _p(
+            self.root,
+            "metadata",
+            "checkpoint",
+            f"source={_clean(source)}.json",
+        )

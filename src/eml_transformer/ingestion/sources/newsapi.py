@@ -18,6 +18,7 @@ class NewsAPISource(TextSource):
 
     name = "newsapi"
     source_type = "api"
+    update_mode = "incremental"
 
     def __init__(
         self,
@@ -85,16 +86,29 @@ class NewsAPISource(TextSource):
         response.raise_for_status()
         return response.json()
 
-    def fetch_raw(self) -> dict[str, Any]:
+    def fetch_raw(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
         """
-        Fetch all configured pages and return a NewsAPI-like response.
+        Fetch all configured pages for either:
+        - normal incremental ingestion
+        - explicit date-window backfills
         """
 
         all_articles: list[dict[str, Any]] = []
         total_results: int | None = None
 
+        effective_from_date = from_date or self.from_date
+        effective_to_date = to_date or self.to_date
+
         for page in range(1, self.max_pages + 1):
-            raw = self.fetch_page(page=page)
+            raw = self.fetch_page(
+                page=page,
+                from_date=effective_from_date,
+                to_date=effective_to_date,
+            )
 
             if raw.get("status") != "ok":
                 raise RuntimeError(
@@ -122,8 +136,8 @@ class NewsAPISource(TextSource):
             "totalResults": total_results or len(all_articles),
             "articles": all_articles,
             "query": self.query,
-            "from": self.from_date,
-            "to": self.to_date,
+            "from": effective_from_date,
+            "to": effective_to_date,
         }
 
     def parse_records(self, raw: Any) -> list[dict[str, Any]]:
@@ -175,8 +189,12 @@ class NewsAPISource(TextSource):
                 "query": self.query,
                 "language": self.language,
                 "sort_by": self.sort_by,
-                "from_date": self.from_date,
-                "to_date": self.to_date,
             },
             raw=article,
         )
+    
+    def get_checkpoint_value(
+        self,
+        raw_record: dict[str, Any],
+    ) -> str | None:
+        return raw_record.get("publishedAt")

@@ -84,11 +84,25 @@ class IngestionPipeline:
             dedupe_key = self.paths.dedupe_state(source.name)
 
             logger.info(
-                "Fetching raw records | source=%s",
+                "Fetching raw records | source=%s | update_mode=%s",
                 source.name,
+                source.update_mode,
             )
 
-            raw = source.fetch_raw()
+            checkpoint = None
+            since = None
+
+            if source.update_mode == "incremental":
+                checkpoint = self._load_checkpoint(source.name)
+
+                if checkpoint is not None:
+                    since = checkpoint.get("last_published_at")
+
+                logger.info("Incremental data source | last_updated=%s", since)
+                raw = source.fetch_raw(from_date=since)
+            else:
+                raw = source.fetch_raw()
+
             raw_records = source.parse_records(raw)
 
             logger.info(
@@ -141,6 +155,27 @@ class IngestionPipeline:
 
             self._save_seen(dedupe_key, seen_hashes)
 
+            if source.update_mode == "incremental" and raw_records:
+                checkpoint_values = [
+                    source.get_checkpoint_value(record)
+                    for record in raw_records
+                ]
+
+                checkpoint_values = [
+                    value for value in checkpoint_values
+                    if value is not None
+                ]
+
+                if checkpoint_values:
+                    self._save_checkpoint(
+                        source.name,
+                        {
+                            "source": source.name,
+                            "last_successful_run_id": run_id,
+                            "last_checkpoint_value": max(checkpoint_values),
+                        },
+                    )
+
             logger.info(
                 "Finished ingestion | source=%s | fetched=%s | written=%s | skipped=%s",
                 source.name,
@@ -178,6 +213,74 @@ class IngestionPipeline:
                 bronze_key=bronze_key,
                 dedupe_key=dedupe_key,
             )
+
+    def _update_checkpoint_from_raw_records(
+        self,
+        source_name: str,
+        run_id: str,
+        raw_records: list[dict[str, Any]],
+    ) -> None:
+        published_times = [
+            record.get("published_at")
+            for record in raw_records
+            if record.get("published_at") is not None
+        ]
+
+        if not published_times:
+            logger.info(
+                "No published_at values found; checkpoint not updated | source=%s",
+                source_name,
+            )
+            return
+
+        self._save_checkpoint(
+            source_name,
+            {
+                "source": source_name,
+                "last_successful_run_id": run_id,
+                "last_published_at": max(published_times),
+            },
+        )
+
+        logger.info(
+            "Checkpoint updated | source=%s | last_published_at=%s",
+            source_name,
+            max(published_times),
+        )
+
+    def _load_checkpoint(self, key: str) -> dict[str, Any] | None:
+        checkpoint_key = self.paths.checkpoint_key(key)
+
+        if not self.storage.exists(checkpoint_key):
+            logger.info(
+                "No checkpoint found | key=%s",
+                checkpoint_key,
+            )
+            return None
+
+        checkpoint = self.storage.read_json(checkpoint_key)
+
+        logger.info(
+            "Loaded checkpoint | key=%s | last_published_at=%s",
+            checkpoint_key,
+            checkpoint.get("last_published_at"),
+        )
+
+        return checkpoint
+
+    def _save_checkpoint(
+        self,
+        key: str,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        checkpoint_key = self.paths.checkpoint_key(key)
+
+        checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        self.storage.write_json(
+            checkpoint,
+            checkpoint_key,
+        )
 
     def _load_seen(self, key: str) -> set[str]:
         if not self.storage.exists(key):

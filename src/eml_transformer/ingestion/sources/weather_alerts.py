@@ -18,6 +18,7 @@ MISO_AREAS = [
 class WeatherAlertSource(TextSource):
     name = "weather_alerts"
     source_type = "api"
+    update_mode = "snapshot"
 
     def __init__(
         self,

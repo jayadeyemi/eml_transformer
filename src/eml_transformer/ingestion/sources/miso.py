@@ -12,6 +12,7 @@ from eml_transformer.ingestion.schema import TextRecord, utc_now
 class MISONotificationSource(TextSource):
     name = "miso_notifications"
     source_type = "api"
+    update_mode = "snapshot"
 
     def __init__(
         self,

@@ -8,6 +8,9 @@ from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord
 
 
+import logging
+logger = logging.getLogger(__name__)
+
 @register_source("newsapi")
 class NewsAPISource(TextSource):
     """
@@ -20,6 +23,7 @@ class NewsAPISource(TextSource):
     source_type = "api"
     update_mode = "incremental"
     supports_backfill = True
+    default_lookback_days = 3
 
     def __init__(
         self,

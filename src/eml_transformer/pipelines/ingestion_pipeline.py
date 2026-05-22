@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import eml_transformer.ingestion.sources  # noqa: F401
@@ -12,7 +12,6 @@ from eml_transformer.storage.storage import Storage
 from eml_transformer.utils.stamping import stable_hash
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class IngestionResult:
@@ -64,11 +63,24 @@ class IngestionPipeline:
 
             effective_from_date = from_date
 
-            if source.update_mode == "incremental" and effective_from_date is None:
+            if source.update_mode == "incremental":
                 checkpoint = self._load_checkpoint(source.name)
 
-                if checkpoint is not None:
+                if effective_from_date is None and checkpoint is not None:
                     effective_from_date = checkpoint.get("last_checkpoint_value")
+
+                if effective_from_date is None:
+                    lookback_days = getattr(source, "default_lookback_days", 7)
+
+                    effective_from_date = (
+                        run_time - timedelta(days=lookback_days)
+                    ).date().isoformat()
+
+            if effective_from_date is None:
+                raise ValueError(
+                    f"No from_date, checkpoint, or default_start_date found for "
+                    f"incremental source {source.name}"
+                )
 
             logger.info(
                 "Fetching raw records | source=%s | update_mode=%s | from=%s | to=%s",
@@ -120,6 +132,7 @@ class IngestionPipeline:
             should_update_checkpoint = (
                 source.update_mode == "incremental"
                 and update_checkpoint
+                and from_date is None
                 and to_date is None
                 and raw_records
             )
@@ -167,19 +180,45 @@ class IngestionPipeline:
         run_id: str,
         raw_records: list[dict[str, Any]],
     ) -> None:
-        checkpoint_values = [
-            source.get_checkpoint_value(record)
-            for record in raw_records
-        ]
+        checkpoint_values: list[datetime] = []
 
-        checkpoint_values = [
-            value for value in checkpoint_values
-            if value is not None
-        ]
+        for record in raw_records:
+            try:
+                value = source.get_checkpoint_value(record)
+
+                if value is None:
+                    continue
+
+                if isinstance(value, str):
+                    value = datetime.fromisoformat(
+                        value.replace("Z", "+00:00")
+                    )
+
+                if not isinstance(value, datetime):
+                    raise TypeError(
+                        f"Checkpoint value must be datetime or ISO string, "
+                        f"got {type(value)}"
+                    )
+
+                if value.tzinfo is None:
+                    raise ValueError(
+                        f"Checkpoint datetime is timezone-naive: {value}"
+                    )
+
+                value = value.astimezone(timezone.utc)
+
+                checkpoint_values.append(value)
+
+            except Exception:
+                logger.warning(
+                    "Skipping malformed checkpoint value | source=%s",
+                    source.name,
+                    exc_info=True,
+                )
 
         if not checkpoint_values:
             logger.info(
-                "No checkpoint values found | source=%s",
+                "No valid checkpoint values found | source=%s",
                 source.name,
             )
             return
@@ -191,16 +230,30 @@ class IngestionPipeline:
             {
                 "source": source.name,
                 "last_successful_run_id": run_id,
-                "last_checkpoint_value": last_checkpoint_value,
+                "last_checkpoint_value": last_checkpoint_value.isoformat(),
             },
         )
 
         logger.info(
             "Checkpoint updated | source=%s | value=%s",
             source.name,
-            last_checkpoint_value,
+            last_checkpoint_value.isoformat(),
         )
-
+        
+    def initialize_checkpoint(
+        self,
+        source_name: str,
+        checkpoint_value: str,
+        run_id: str = "manual_init",
+    ) -> None:
+        self._save_checkpoint(
+            source_name,
+            {
+                "source": source_name,
+                "last_successful_run_id": run_id,
+                "last_checkpoint_value": checkpoint_value,
+            },
+        )
     def _load_checkpoint(self, key: str) -> dict[str, Any] | None:
         checkpoint_key = self.paths.checkpoint_key(key)
 

@@ -47,6 +47,7 @@ It is organized by processing level and metadata.
 data/
 ├── bronze/
 ├── silver/
+├── gold/
 └── metadata/
 ```
 

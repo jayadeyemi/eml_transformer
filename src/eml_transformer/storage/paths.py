@@ -52,7 +52,7 @@ class StoragePaths:
             "silver",
             f"source={_clean(source)}",
             # f"ingest_date={ingest_date}",
-            "records.csv",
+            "records.parquet",
         )
 
     
@@ -70,7 +70,7 @@ class StoragePaths:
                 self.root,
                 "gold",
                 f"model={_clean(model_name)}",
-                "embeddings.csv" 
+                "embeddings.parquet" 
         ) 
         
 

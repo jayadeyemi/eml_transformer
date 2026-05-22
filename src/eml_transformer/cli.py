@@ -183,6 +183,7 @@ def backfill(
     end_date: str = typer.Option(..., "--end-date"),
     window_days: int = typer.Option(30, "--window-days"),
     config: str = typer.Option("configs/dev.yaml", "--config", "-c"),
+    init_checkpoint: bool = typer.Option(False, "--init-checkpoint"),
 ):
     rt = build_runtime(config)
 
@@ -211,6 +212,7 @@ def backfill(
             start_date=start_date,
             end_date=end_date,
             window_days=window_days,
+            seed_checkpoint=init_checkpoint
         )
 
     typer.echo(results)

@@ -6,11 +6,16 @@ from typing import Any
 
 import requests
 
+
+
 from eml_transformer.ingestion.base import TextSource
 from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord
 from eml_transformer.utils.stamping import stable_hash
+from eml_transformer.utils.dates import parse_issued_at
 
+import logging
+logger = logging.getLogger(__name__)
 
 @register_source("iem_afos")
 class IEMAFOSSource(TextSource):
@@ -27,13 +32,45 @@ class IEMAFOSSource(TextSource):
 
 
     Reference: https://mesonet.agron.iastate.edu/cgi-bin/afos/retrieve.py?help 
+
+    Most text follows this format
+
+        .KEY MESSAGES...
+        summary bullets
+
+        &&
+
+        .SHORT TERM (...)
+        short range forecast
+
+        &&
+
+        .LONG TERM (...)
+        extended forecast
+
+        &&
+
+        .AVIATION (...)
+        aviation impacts
+
+        &&
+
+        .WATCHES/WARNINGS/ADVISORIES...
+        active alerts
+
+        &&
+
+        $$
+        FORECASTER NAMES
     """
 
     name = "iem_afos"
     source_type = "api"
     update_mode = "incremental"
     supports_backfill = True
+    default_lookback_days = 3
 
+    # Weather Forecast OFfices
     DEFAULT_MISO_WFOS = [
         "IND",  # Indianapolis
         "IWX",  # Northern Indiana
@@ -59,6 +96,7 @@ class IEMAFOSSource(TextSource):
         "BMX",  # Birmingham
     ]
 
+    #types of alerts
     DEFAULT_PRODUCT_TYPES = [
         "AFD",  # Area Forecast Discussion
         "HWO",  # Hazardous Weather Outlook
@@ -68,25 +106,39 @@ class IEMAFOSSource(TextSource):
         "SPS",  # Special weather statements
     ]
 
+    HEADER_RE = re.compile(
+        r"""
+        (?P<seq>\d{3})\s+
+        (?P<wmo>[A-Z]{4}\d{2})\s+
+        (?P<office>[A-Z]{4})\s+
+        (?P<ddhhmm>\d{6})\s+
+        (?P<pil>[A-Z]{6})
+        """,
+        re.VERBOSE,
+    )
+
+    SECTION_RE = re.compile(
+        r"(?ms)^"
+        r"\.(?P<section>[A-Z0-9 /-]+?)"
+        r"(?:\s*\((?P<section_detail>.*?)\))?"
+        r"\.\.\."
+        r"(?P<content>.*?)(?=\n&&|\n\.[A-Z0-9 /-]+(?:\s*\(.*?\))?\.\.\.|\n\$\$|\Z)"
+    )
+
     def __init__(
         self,
         pil: str | None = None,
         wfos: list[str] | None = None,
         product_types: list[str] | None = None,
-        limit: int = 100,
+        limit: int = 9999,
         fmt: str = "text",
         timeout: int = 30,
     ):
         self.pil = pil.upper() if pil else None
-        self.wfos = [
-            wfo.upper()
-            for wfo in (wfos or self.DEFAULT_MISO_WFOS)
-        ]
+        self.wfos = [wfo.upper() for wfo in (wfos or self.DEFAULT_MISO_WFOS)]
         self.product_types = [
             product_type.upper()
-            for product_type in (
-                product_types or self.DEFAULT_PRODUCT_TYPES
-            )
+            for product_type in (product_types or self.DEFAULT_PRODUCT_TYPES)
         ]
 
         self.limit = limit
@@ -98,25 +150,24 @@ class IEMAFOSSource(TextSource):
             "cgi-bin/afos/retrieve.py"
         )
 
+
     def fetch_raw(
         self,
-        sdate: str,
-        edate: str,
-    ) -> dict[str, str]:
-        results: dict[str, str] = {}
+        from_date: str,
+        to_date: str,
+    ) -> list[dict[str, Any]]:
+        responses = []
 
         for pil in self._pils_to_fetch():
-            params = {
-                "pil": pil,
-                "sdate": sdate,
-                "edate": edate,
-                "limit": self.limit,
-                "fmt": self.fmt,
-            }
-
             response = requests.get(
                 self.base_url,
-                params=params,
+                params={
+                    "pil": pil,
+                    "sdate": from_date,
+                    "edate": to_date,
+                    "limit": self.limit,
+                    "fmt": self.fmt,
+                },
                 timeout=self.timeout,
             )
 
@@ -124,77 +175,230 @@ class IEMAFOSSource(TextSource):
 
             text = response.text.strip()
 
-            if not text or text.startswith("ERROR:"):
-                continue
+            if text and not text.startswith("ERROR:"):
+                responses.append({
+                    "pil": pil,
+                    "response": text,
+                })
 
-            results[pil] = text
-
-        return results
+        return responses
+    
 
     def parse_records(
         self,
-        raw: dict[str, str],
-    ) -> list[TextRecord]:
-        records: list[TextRecord] = []
+        raw: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        records = []
+        seen_ids = set()
 
-        for fallback_pil, raw_text in raw.items():
-            for chunk in self._split_products(raw_text):
-                parsed = self._parse_product(
-                    text=chunk,
-                    fallback_pil=fallback_pil,
-                )
+        for item in raw:
+            pil = item["pil"]
+            text = item["response"]
 
-                record_id = stable_hash(
+            for chunk in self._split_products(text):
+                header = self._parse_header(chunk)
+                parsed_pil = header.get("pil") or pil
+
+                try:
+                    issued_at_text, published_at = self._parse_published_at(
+                        raw_text=chunk,
+                        pil=parsed_pil,
+                    )
+                except Exception:
+                    # Option A: skip malformed records at parse stage
+                    logger.warning(
+                        "Skipping malformed AFOS record during parse | pil=%s",
+                        parsed_pil,
+                        exc_info=True,
+                    )
+                    continue
+
+                source_id = stable_hash(
                     {
-                        "source": self.name,
-                        "pil": parsed["pil"],
-                        "office": parsed["office"],
-                        "wmo_header": parsed["wmo_header"],
-                        "issued_at_text": parsed["issued_at_text"],
+                        "pil": parsed_pil,
+                        "office": header.get("office"),
+                        "issued_code": header.get("issued_code"),
+                        "raw_id": header.get("raw_id"),
+                        "published_at": published_at,
                     }
                 )
 
-                record = TextRecord(
-                    record_id=record_id,
-                    source=self.name,
-                    source_type=self.source_type,
-                    title=parsed["title"],
-                    text=parsed["full_text"],
-                    published_at=parsed["issued_at_text"],
-                    retrieved_at=datetime.now(timezone.utc).isoformat(),
-                    url=parsed["url"],
-                    region=parsed["office"],
-                    categories=parsed["categories"],
-                    raw=parsed,
+                if source_id in seen_ids:
+                    continue
+
+                seen_ids.add(source_id)
+
+                records.append(
+                    {
+                        "pil": parsed_pil,
+                        "raw_text": chunk,
+                        "header": header,
+                        "issued_at_text": issued_at_text,
+                        "published_at": published_at,
+                    }
                 )
 
-                records.append(record)
-
         return records
-    
+
+
+
+
     def standardize_record(
         self,
-        record: TextRecord,
+        record: dict[str, Any],
     ) -> TextRecord:
-        key_messages = self._extract_key_messages(record.text)
+        pil = record["pil"]
+        raw_text = record["raw_text"]
 
-        published_at = self._parse_issued_at(record.published_at)
+        header = record.get("header") or self._parse_header(raw_text)
+        sections = self._parse_sections(raw_text)
 
-        data = {
-            **record.__dict__,
-            "text": key_messages or record.text,
-            "published_at": published_at,
-        }
+        issued_at_text = record.get("issued_at_text")
+        published_at = record.get("published_at")
 
-        raw = dict(record.raw or {})
-        raw["standardized_text_source"] = "key_messages"
-        raw["full_text"] = record.text
-        raw["published_at_standardized"] = published_at
+        if not published_at:
+            issued_at_text, published_at = self._parse_published_at(
+                raw_text=raw_text,
+                pil=pil,
+            )
 
-        data["raw"] = raw
+        product_type = pil[:3]
+        office = header.get("office")
 
-        return TextRecord(**data)
+        if not office:
+            office = pil[3:] if len(pil) >= 6 else None
 
+        if not office:
+            raise ValueError(f"Could not determine office for PIL={pil}")
+
+        key_messages = sections.get("KEY MESSAGES")
+        short_term = sections.get("SHORT TERM")
+
+        text = "\n\n".join(
+            part.strip()
+            for part in [key_messages, short_term]
+            if isinstance(part, str) and part.strip()
+        )
+
+        if not text:
+            text = raw_text.strip()
+
+        record_id = stable_hash(
+            {
+                "source": self.name,
+                "pil": pil,
+                "office": office,
+                "issued_code": header.get("issued_code"),
+                "raw_id": header.get("raw_id"),
+                "published_at": published_at,
+            }
+        )
+
+        return TextRecord(
+            record_id=record_id,
+            source=self.name,
+            source_type=self.source_type,
+            title=self._make_title(
+                product_type=product_type,
+                office=office,
+                issued_at_text=issued_at_text,
+            ),
+            text=text,
+            published_at=published_at,
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+            url=self.base_url,
+            region=office[-3:],
+            categories=[
+                "weather",
+                "nws",
+                "iem",
+                "afos",
+                product_type.lower(),
+            ],
+            metadata={
+                "pil": pil,
+                "product_type": product_type,
+                "office": office,
+                "sections": sections,
+                "key_messages": key_messages,
+                "issued_at_text": issued_at_text,
+                "published_at_standardized": published_at,
+                **header,
+            },
+            raw=raw_text,
+        )
+    
+    def get_checkpoint_value(
+        self,
+        record: dict[str, Any],
+    ) -> datetime | None:
+        published_at = record.get("published_at")
+
+        if not published_at:
+            return None
+
+        try:
+            dt = datetime.fromisoformat(
+                published_at.replace("Z", "+00:00")
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Malformed checkpoint datetime: {published_at!r}"
+            ) from e
+
+        if dt.tzinfo is None:
+            raise ValueError(
+                f"Naive checkpoint datetime: {published_at!r}"
+            )
+
+        return dt.astimezone(timezone.utc)
+    
+    def _parse_published_at(
+        self,
+        raw_text: str,
+        pil: str,
+    ) -> tuple[str, str]:
+        issued_at_text = self._extract_issued_text(raw_text)
+
+        try:
+            published_at = parse_issued_at(issued_at_text)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse published_at for PIL={pil}: "
+                f"{issued_at_text!r}"
+            ) from e
+
+        if not published_at:
+            raise ValueError(
+                f"Missing published_at for PIL={pil}: {issued_at_text!r}"
+            )
+
+        if not isinstance(published_at, str):
+            raise TypeError(
+                f"published_at must be ISO datetime string, "
+                f"got {type(published_at)}"
+            )
+
+        try:
+            parsed_dt = datetime.fromisoformat(
+                published_at.replace("Z", "+00:00")
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Malformed ISO datetime published_at for PIL={pil}: "
+                f"{published_at!r}"
+            ) from e
+
+        if parsed_dt.tzinfo is None:
+            raise ValueError(
+                f"Naive datetime published_at for PIL={pil}: "
+                f"{published_at!r}"
+            )
+
+        published_at = parsed_dt.astimezone(timezone.utc).isoformat()
+
+        return issued_at_text or "", published_at
+    
     def _pils_to_fetch(self) -> list[str]:
         if self.pil:
             return [self.pil]
@@ -209,90 +413,71 @@ class IEMAFOSSource(TextSource):
         self,
         raw: str,
     ) -> list[str]:
-        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
 
-        pattern = (
-            r"(?m)(?=^\d{3}\n"
-            r"[A-Z]{4}\d{2}\s+K[A-Z]{3}\s+\d{6}\n"
-            r"[A-Z]{3}[A-Z0-9]{3})"
-        )
+        matches = list(self.HEADER_RE.finditer(text))
 
-        chunks = re.split(pattern, raw)
+        records = []
 
-        return [
-            chunk.strip()
-            for chunk in chunks
-            if chunk.strip()
-            and not chunk.strip().startswith("ERROR:")
-        ]
+        for i, match in enumerate(matches):
+            start = match.start()
 
-    def _parse_product(
-        self,
-        text: str,
-        fallback_pil: str,
-    ) -> dict[str, Any]:
+            if i + 1 < len(matches):
+                end = matches[i + 1].start()
+            else:
+                end = len(text)
 
-        header = self._parse_header(text)
+            chunk = text[start:end].strip()
+            records.append(chunk)
 
-        pil = header.get("pil") or fallback_pil
-        product_type = pil[:3]
-
-        issued_at_text = self._extract_issued_text(text)
-
-        key_messages = self._extract_key_messages(text)
-
-        return {
-            "pil": pil,
-            "product_type": product_type,
-            "raw_id": header.get("raw_id"),
-            "wmo_header": header.get("wmo_header"),
-            "office": header.get("office"),
-            "issued_code": header.get("issued_code"),
-            "issued_at_text": issued_at_text,
-            "title": self._make_title(
-                product_type=product_type,
-                office=header.get("office"),
-                issued_at_text=issued_at_text,
-            ),
-            "text": key_messages,
-            "full_text": text,
-            "url": self.base_url,
-            "categories": [
-                "weather",
-                "nws",
-                "iem",
-                "afos",
-                product_type.lower(),
-            ],
-        }
+        return records
 
     def _parse_header(
         self,
         text: str,
     ) -> dict[str, str | None]:
-        match = re.search(
-            r"(?m)^(\d{3})\n"
-            r"([A-Z]{4}\d{2}\s+(K[A-Z]{3})\s+(\d{6}))\n"
-            r"([A-Z]{3}[A-Z0-9]{3})",
-            text,
-        )
+        match = self.HEADER_RE.search(text)
 
         if not match:
             return {
                 "raw_id": None,
+                "wmo": None,
                 "wmo_header": None,
                 "office": None,
                 "issued_code": None,
                 "pil": None,
             }
 
+        wmo_header = (
+            f"{match.group('wmo')} "
+            f"{match.group('office')} "
+            f"{match.group('ddhhmm')}"
+        )
+
         return {
-            "raw_id": match.group(1),
-            "wmo_header": match.group(2),
-            "office": match.group(3),
-            "issued_code": match.group(4),
-            "pil": match.group(5),
+            "raw_id": match.group("seq"),
+            "wmo": match.group("wmo"),
+            "wmo_header": wmo_header,
+            "office": match.group("office"),
+            "issued_code": match.group("ddhhmm"),
+            "pil": match.group("pil"),
         }
+
+    def _parse_sections(
+        self,
+        text: str,
+    ) -> dict[str, str]:
+        sections: dict[str, str] = {}
+
+        for match in self.SECTION_RE.finditer(text):
+            section = match.group("section").strip()
+            content = match.group("content").strip()
+
+            section = re.sub(r"\s+", " ", section)
+
+            sections[section] = content
+
+        return sections
 
     def _extract_issued_text(
         self,
@@ -311,49 +496,12 @@ class IEMAFOSSource(TextSource):
             text,
         )
 
-        if not match:
-            return None
+        if match:
+            return match.group(1).strip()
 
-        return match.group(1).strip()
+        return None
 
-    def _parse_issued_at(
-        self,
-        issued_at_text: str | None,
-    ) -> str | None:
-        if not issued_at_text:
-            return None
 
-        cleaned = issued_at_text.strip()
-
-        if cleaned.lower().startswith("issued at "):
-            cleaned = cleaned[len("Issued at "):]
-
-        try:
-            dt = parsedate_to_datetime(cleaned)
-
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-
-            return dt.isoformat()
-
-        except Exception:
-            return cleaned
-
-    def _extract_key_messages(
-        self,
-        text: str,
-    ) -> str | None:
-        pattern = (
-            r"(?s)\.KEY MESSAGES\.\.\.\s*\n"
-            r"(.*?)(?=\n&&|\n\.[A-Z]|\n\$\$|\Z)"
-        )
-
-        match = re.search(pattern, text)
-
-        if not match:
-            return None
-
-        return match.group(1).strip()
 
     def _make_title(
         self,
@@ -366,3 +514,5 @@ class IEMAFOSSource(TextSource):
             office or "",
             issued_at_text or "",
         ]
+
+        return " | ".join(part for part in parts if part)

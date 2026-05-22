@@ -190,6 +190,9 @@ class EmbeddingPipeline:
         dfs = []
 
         for source in sources:
+            if not source == 'iem_afos':
+                continue
+            
             key = self.paths.silver_records(source)
 
             df = self.storage.read_parquet(key)

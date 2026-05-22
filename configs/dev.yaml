@@ -6,7 +6,40 @@ paths:
   root: .
 
 sources:
+  iem_afos:
+      enabled: true
+
+      # Optional:
+      # If provided, only fetch this exact PIL
+      # Example: AFDIND
+      pil: null
+
+      # Weather Forecast Offices
+      wfos:
+        - IND
+        - IWX
+        - LOT
+        - ILX
+        - LSX
+        - DVN
+        - DMX
+
+      # Product types
+      product_types:
+        - AFD
+        - HWO
+        - NPW
+        - WSW
+        - LSR
+        - SPS
+
+      # API settings
+      limit: 100
+      fmt: text
+      timeout: 30
+
   newsapi:
+  
     enabled: true
     api_key_env: NEWSAPI_KEY
     query: >
@@ -37,7 +70,7 @@ sources:
 
 embedding:
   provider: sentence_transformer
-  # model: nvidia/NV-Embed-v2
+  model: nvidia/NV-Embed-v2
   batch_size: 16
   device: cuda
   normalize_embeddings: true

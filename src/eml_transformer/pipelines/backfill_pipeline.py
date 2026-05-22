@@ -51,6 +51,7 @@ class BackfillPipeline:
         start_date: str,
         end_date: str,
         window_days: int = 30,
+        seed_checkpoint: bool = False,
     ):
         source = create_source(
             source_name,
@@ -90,9 +91,22 @@ class BackfillPipeline:
                 from_date=from_date,
                 to_date=to_date,
                 update_checkpoint=False,
+                
             )
 
             results.append(result)
+
+            if result.status != "success":
+                return results
+
+        if seed_checkpoint and results:
+            final_end = windows[-1][1]
+
+            self.ingestion_pipeline.initialize_checkpoint(
+                source_name=source_name,
+                checkpoint_value=final_end,
+                run_id="backfill_seed",
+            )
 
         return results
 

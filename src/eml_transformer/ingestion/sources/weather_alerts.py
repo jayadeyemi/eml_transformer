@@ -7,12 +7,18 @@ from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord, utc_now
 
 
+import logging
+logger = logging.getLogger(__name__)
+
 MISO_AREAS = [
     "IN", "IL", "MI", "OH", "KY",
     "WI", "MN", "IA", "MO", "AR",
     "LA", "MS", "ND", "SD",
 ]
 
+
+import logging
+logger = logging.getLogger(__name__)
 
 @register_source("weather_alerts")
 class WeatherAlertSource(TextSource):

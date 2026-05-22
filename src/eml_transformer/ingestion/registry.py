@@ -9,12 +9,15 @@ _SOURCE_REGISTRY: dict[str, Type[TextSource]] = {}
 
 
 def register_source(name: str):
-    """
-    Decorator for registering ingestion source classes.
-    """
-
-    def decorator(cls: Type[TextSource]) -> Type[TextSource]:
+    def decorator(cls):
         if name in _SOURCE_REGISTRY:
+            old_cls = _SOURCE_REGISTRY[name]
+
+            # allow notebook/autoreload re-registration of same source name
+            if old_cls.__name__ == cls.__name__:
+                _SOURCE_REGISTRY[name] = cls
+                return cls
+
             raise ValueError(f"Source already registered: {name}")
 
         _SOURCE_REGISTRY[name] = cls

@@ -157,6 +157,7 @@ def embed(
 def run_all(
     config: str = typer.Option("configs/dev.yaml"),
 ):
+    from eml_transformer.pipelines.embedding_pipeline import EmbeddingPipeline
     rt = build_runtime(config)
 
     IngestionPipeline(

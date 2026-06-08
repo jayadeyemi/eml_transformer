@@ -1,62 +1,55 @@
-import os
+from __future__ import annotations
+
+import logging
+from typing import Any
 
 import pandas as pd
 import typer
 from dotenv import load_dotenv
 
+from eml_transformer.ingestion.registry import available_sources
 from eml_transformer.logging import setup_logging
-import logging
-
-from eml_transformer.ingestion.registry import (
-    available_sources,
-)
-
+from eml_transformer.pipelines.backfill_pipeline import BackfillPipeline
 from eml_transformer.pipelines.ingestion_pipeline import IngestionPipeline
 from eml_transformer.pipelines.standardization_pipeline import StandardizationPipeline
-from eml_transformer.pipelines.backfill_pipeline import BackfillPipeline
-
 from eml_transformer.runtime import build_runtime
 
 load_dotenv()
+
 app = typer.Typer()
+logger = logging.getLogger(__name__)
 
 
+def print_result_table(title: str, results: list[Any]) -> None:
+    rows = [
+        result.to_summary()
+        for result in results
+    ]
 
-def print_ingestion_preview(
-    df: pd.DataFrame,
+    if not rows:
+        typer.echo(f"\n{title}: no results")
+        return
+
+    df = pd.DataFrame(rows)
+
+    typer.echo("\n" + "=" * 100)
+    typer.echo(title.upper())
+    typer.echo("=" * 100)
+    typer.echo(df.to_string(index=False, max_colwidth=40))
+    typer.echo("=" * 100 + '\n')
+
+
+def get_source_config(
     source: str,
-    n: int = 3,
-) -> None:
-    typer.echo("\n" + "=" * 90)
-    typer.echo(f"{source.upper()} INGESTION PREVIEW")
-    typer.echo("=" * 90)
-
-    typer.echo(f"Records retrieved: {len(df)}")
-    typer.echo(f"Columns: {list(df.columns)}")
-
-    for i, row in df.head(n).iterrows():
-        typer.echo(f"\nRecord {i + 1}")
-
-        typer.echo(
-            f"Title: {row.get('title')}"
+    source_configs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if source not in source_configs:
+        available = ", ".join(sorted(source_configs))
+        raise typer.BadParameter(
+            f"Unknown source: {source}. Available sources: {available}"
         )
 
-        typer.echo(
-            f"Published: {row.get('published_at')}"
-        )
-
-        typer.echo(
-
-            f"URL: {row.get('url')}"
-        )
-
-        typer.echo("\nText snippet:")
-
-        typer.echo(
-            (row.get("text") or "")[:1000]
-        )
-
-        typer.echo("-" * 90)
+    return source_configs[source]
 
 
 @app.callback()
@@ -64,10 +57,11 @@ def main(
     log_level: str = typer.Option("INFO"),
 ):
     setup_logging(
-        level=logging.INFO,
+        level=getattr(logging, log_level.upper()),
         log_file=None,
         force=False,
     )
+
 
 @app.command()
 def sources():
@@ -77,12 +71,10 @@ def sources():
         typer.echo(f"- {source}")
 
 
-
 @app.command()
 def ingest(
-    source: str = typer.Option(...),
+    source: str = typer.Option("all"),
     config: str = typer.Option("configs/dev.yaml"),
-    preview: bool = typer.Option(True),
 ):
     rt = build_runtime(config)
 
@@ -91,19 +83,17 @@ def ingest(
         paths=rt.paths,
     )
 
-
     if source.lower() == "all":
         results = pipeline.run_all(rt.source_configs)
     else:
-        source_config = rt.source_configs[source]
+        source_config = get_source_config(source, rt.source_configs)
         results = [pipeline.run_source(source, source_config)]
 
-    typer.echo(results)
-
+    print_result_table("Ingestion Results", results)
 
 
 @app.command("standardize")
-def clean_standardize(
+def standardize(
     source: str = typer.Option("all"),
     config: str = typer.Option("configs/dev.yaml"),
 ):
@@ -117,66 +107,82 @@ def clean_standardize(
     if source.lower() == "all":
         results = pipeline.run_all(rt.source_configs)
     else:
-        source_config = rt.source_configs[source]
+        source_config = get_source_config(source, rt.source_configs)
         results = [pipeline.run_source(source, source_config)]
 
-    typer.echo(results)
+    print_result_table("Standardization Results", results)
+
 
 @app.command()
 def embed(
     source: str = typer.Option("all"),
-    model_name: str | None = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="Embedding model name to use such as ",
-    ),
+    model_name: str | None = typer.Option(None, "--model", "-m"),
     config: str = typer.Option("configs/dev.yaml"),
 ):
     from eml_transformer.pipelines.embedding_pipeline import EmbeddingPipeline
+
     rt = build_runtime(config)
 
     embedding_config = dict(rt.embedding_config)
 
     if model_name is not None:
-        embedding_config["model_name"] = model_name
+        embedding_config["model"] = model_name
 
     pipeline = EmbeddingPipeline(
         storage=rt.storage,
         paths=rt.paths,
     )
 
-    result = pipeline.run(
-        embedding_config=embedding_config,
-        source_configs=rt.source_configs,
-    )
+    if source.lower() == "all":
+        results = pipeline.run_all(
+            embedding_config=embedding_config,
+            source_configs=rt.source_configs,
+        )
+    else:
+        get_source_config(source, rt.source_configs)
 
-    typer.echo(result)
+        results = [
+            pipeline.run_source(
+                source=source,
+                embedding_config=embedding_config,
+            )
+        ]
+
+    print_result_table("Embedding Results", results)
+
 
 @app.command("run-all")
 def run_all(
     config: str = typer.Option("configs/dev.yaml"),
 ):
     from eml_transformer.pipelines.embedding_pipeline import EmbeddingPipeline
+
     rt = build_runtime(config)
 
-    IngestionPipeline(
+    ingestion_results = IngestionPipeline(
         storage=rt.storage,
         paths=rt.paths,
-        # config=rt.ingestion_config,
     ).run_all(rt.source_configs)
 
-    StandardizationPipeline(
+    print_result_table("Ingestion Results", ingestion_results)
+
+    standardization_results = StandardizationPipeline(
         storage=rt.storage,
         paths=rt.paths,
-        # config=rt.standardization_config,
     ).run_all(rt.source_configs)
 
-    EmbeddingPipeline(
+    print_result_table("Standardization Results", standardization_results)
+
+    embedding_results = EmbeddingPipeline(
         storage=rt.storage,
         paths=rt.paths,
-        # config=rt.embedding_config,
-    ).run(rt.embedding_config, rt.source_configs)
+    ).run_all(
+        embedding_config=rt.embedding_config,
+        source_configs=rt.source_configs,
+    )
+
+    print_result_table("Embedding Results", embedding_results)
+
 
 @app.command()
 def backfill(
@@ -189,13 +195,13 @@ def backfill(
 ):
     rt = build_runtime(config)
 
-    ingest_pipeline = IngestionPipeline(
+    ingestion_pipeline = IngestionPipeline(
         storage=rt.storage,
         paths=rt.paths,
     )
 
     pipeline = BackfillPipeline(
-        ingestion_pipeline=ingest_pipeline,
+        ingestion_pipeline=ingestion_pipeline,
     )
 
     if source.lower() == "all":
@@ -206,18 +212,20 @@ def backfill(
             window_days=window_days,
         )
     else:
-        source_config = rt.source_configs[source]
+        source_config = get_source_config(source, rt.source_configs)
 
-        results = pipeline.run_source(
-            source_name=source,
-            source_config=source_config,
-            start_date=start_date,
-            end_date=end_date,
-            window_days=window_days,
-            seed_checkpoint=init_checkpoint
-        )
+        results = [
+            pipeline.run_source(
+                source_name=source,
+                source_config=source_config,
+                start_date=start_date,
+                end_date=end_date,
+                window_days=window_days,
+                seed_checkpoint=init_checkpoint,
+            )
+        ]
 
-    typer.echo(results)
+    print_result_table("Backfill Results", results)
 
 
 if __name__ == "__main__":

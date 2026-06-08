@@ -8,9 +8,7 @@ import pandas as pd
 
 from eml_transformer.storage.paths import StoragePaths
 from eml_transformer.storage.storage import Storage
-from eml_transformer.text_processing.embeddings import (
-    SentenceTransformerEmbedder
-)
+from eml_transformer.text_processing.embeddings import SentenceTransformerEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EmbeddingResult:
     status: str
-
+    source: str
     model_name: str
 
     records_read: int
@@ -27,10 +25,21 @@ class EmbeddingResult:
     records_failed: int = 0
 
     output_key: str | None = None
-
     error: str | None = None
-
     records: pd.DataFrame | None = None
+
+    def to_summary(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "status": self.status,
+            "read": self.records_read,
+            "embedded": self.embeddings_created,
+            "skipped": self.embeddings_skipped,
+            "failed": self.records_failed,
+            "model": self.model_name,
+            "output": self.output_key,
+            "error": self.error,
+        }
 
 
 class EmbeddingPipeline:
@@ -42,52 +51,55 @@ class EmbeddingPipeline:
         self.storage = storage
         self.paths = paths
 
-    def run(
+    def run_all(
         self,
         embedding_config: dict[str, Any],
         source_configs: dict[str, dict[str, Any]],
-    ) -> EmbeddingResult:
+    ) -> list[EmbeddingResult]:
+        results = []
 
+        for source in source_configs:
+            result = self.run_source(
+                source=source,
+                embedding_config=embedding_config,
+            )
+            results.append(result)
+
+        return results
+
+    def run_source(
+        self,
+        source: str,
+        embedding_config: dict[str, Any],
+    ) -> EmbeddingResult:
         model_name = embedding_config.get(
             "model",
             "nvidia/llama-nemotron-embed-vl-1b-v2",
         )
 
-        input_type = embedding_config.get(
-            "input_type",
-            "passage",
-        )
-
-        batch_size = embedding_config.get(
-            "batch_size",
-            32,
-        )
-
-        text_columns = embedding_config.get(
-            "text_columns",
-            ["title", "text"],
-        )
+        input_type = embedding_config.get("input_type", "passage")
+        batch_size = embedding_config.get("batch_size", 32)
+        text_columns = embedding_config.get("text_columns", ["title", "text"])
 
         output_key = self.paths.gold_records(
+            source=source,
             model_name=model_name,
         )
 
-        sources = list(source_configs.keys())
-
         logger.info(
-            "Starting embedding pipeline | model=%s | sources=%s",
+            "Starting embedding pipeline | source=%s | model=%s",
+            source,
             model_name,
-            sources,
         )
 
         try:
-            df = self._load_records(sources)
-
+            df = self._load_source_records(source)
             records_read = len(df)
 
             if df.empty:
                 return EmbeddingResult(
                     status="empty",
+                    source=source,
                     model_name=model_name,
                     records_read=0,
                     embeddings_created=0,
@@ -104,28 +116,49 @@ class EmbeddingPipeline:
                 axis=1,
             )
 
-            valid_mask = (
-                df["embedding_text"]
-                .fillna("")
-                .str.strip()
-                .ne("") 
-            )
-
+            valid_mask = df["embedding_text"].fillna("").str.strip().ne("")
             valid_df = df.loc[valid_mask].copy()
 
-            embeddings_skipped = len(df) - len(valid_df)
+            invalid_text_count = len(df) - len(valid_df)
 
             if valid_df.empty:
                 return EmbeddingResult(
                     status="no_valid_text",
+                    source=source,
+                    model_name=model_name,
+                    records_read=records_read,
+                    embeddings_created=0,
+                    embeddings_skipped=invalid_text_count,
+                    output_key=output_key,
+                    records=df,
+                )
+
+            existing_df = self._load_existing_embeddings(output_key)
+
+            existing_record_ids = (
+                set(existing_df["record_id"])
+                if not existing_df.empty and "record_id" in existing_df.columns
+                else set()
+            )
+
+            new_df = valid_df.loc[
+                ~valid_df["record_id"].isin(existing_record_ids)
+            ].copy()
+
+            already_embedded_count = len(valid_df) - len(new_df)
+            embeddings_skipped = invalid_text_count + already_embedded_count
+
+            if new_df.empty:
+                return EmbeddingResult(
+                    status="up_to_date",
+                    source=source,
                     model_name=model_name,
                     records_read=records_read,
                     embeddings_created=0,
                     embeddings_skipped=embeddings_skipped,
                     output_key=output_key,
-                    records=df,
+                    records=existing_df,
                 )
-
 
             client = SentenceTransformerEmbedder(
                 model_name=model_name,
@@ -133,48 +166,64 @@ class EmbeddingPipeline:
             )
 
             logger.info(
-                "Generating embeddings | rows=%s | batch_size=%s",
-                len(valid_df),
+                "Generating embeddings | source=%s | rows=%s | batch_size=%s",
+                source,
+                len(new_df),
                 batch_size,
             )
 
             embeddings = client.embed(
-                valid_df["embedding_text"].tolist(),
+                new_df["embedding_text"].tolist(),
                 batch_size=batch_size,
             )
 
-            valid_df["embedding"] = embeddings
-            valid_df["embedding_model"] = model_name
-            valid_df["embedding_input_type"] = input_type
+            new_df["embedding"] = embeddings
+            new_df["embedding_model"] = model_name
+            new_df["embedding_input_type"] = input_type
+            new_df["source"] = source
+
+            final_df = pd.concat(
+                [existing_df, new_df],
+                ignore_index=True,
+            )
+
+            final_df = final_df.drop_duplicates(
+                subset=["record_id"],
+                keep="last",
+            )
 
             logger.info(
-                "Writing embeddings | rows=%s | output_key=%s",
-                len(valid_df),
+                "Writing embeddings | source=%s | rows=%s | output_key=%s",
+                source,
+                len(final_df),
                 output_key,
             )
 
             self.storage.write_parquet(
-                valid_df,
+                final_df,
                 output_key,
             )
 
             return EmbeddingResult(
                 status="success",
+                source=source,
                 model_name=model_name,
                 records_read=records_read,
-                embeddings_created=len(valid_df),
+                embeddings_created=len(new_df),
                 embeddings_skipped=embeddings_skipped,
                 output_key=output_key,
-                records=valid_df,
+                records=new_df,
             )
 
         except Exception as exc:
             logger.exception(
-                "Embedding pipeline failed"
+                "Embedding pipeline failed | source=%s",
+                source,
             )
 
             return EmbeddingResult(
                 status="failed",
+                source=source,
                 model_name=model_name,
                 records_read=0,
                 embeddings_created=0,
@@ -183,44 +232,38 @@ class EmbeddingPipeline:
                 error=str(exc),
             )
 
-    def _load_records(
+    def _load_source_records(
         self,
-        sources: list[str],
+        source: str,
     ) -> pd.DataFrame:
-        dfs = []
+        key = self.paths.silver_records(source)
 
-        for source in sources:
-            if not source == 'iem_afos':
-                continue
-            
-            key = self.paths.silver_records(source)
+        df = self.storage.read_parquet(key)
 
-            df = self.storage.read_parquet(key)
-
-            if df.empty:
-                logger.warning(
-                    "No silver records found | source=%s",
-                    source,
-                )
-                continue
-
-            dfs.append(df)
-
-        if not dfs:
+        if df.empty:
+            logger.warning(
+                "No silver records found | source=%s",
+                source,
+            )
             return pd.DataFrame()
 
-        merged = pd.concat(
-            dfs,
-            ignore_index=True,
-        )
-
-        merged = (
-            merged
+        df = (
+            df
             .drop_duplicates(subset=["record_id"])
             .sort_values(by=["published_at"])
+            .reset_index(drop=True)
         )
 
-        return merged
+        return df
+
+    def _load_existing_embeddings(
+        self,
+        output_key: str,
+    ) -> pd.DataFrame:
+        try:
+            return self.storage.read_parquet(output_key)
+        except FileNotFoundError:
+            return pd.DataFrame()
 
     def _build_embedding_text(
         self,

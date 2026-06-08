@@ -62,7 +62,8 @@ class StoragePaths:
 
     def gold_records( 
         self, 
-        model_name: str
+        model_name: str,
+        source: str,
     ) -> str:
 
         model_name = model_name.replace('sentence-transformers/', '')
@@ -70,6 +71,7 @@ class StoragePaths:
                 self.root,
                 "gold",
                 f"model={_clean(model_name)}",
+                f"source={_clean(source)}",
                 "embeddings.parquet" 
         ) 
         

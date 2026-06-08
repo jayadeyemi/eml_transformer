@@ -26,6 +26,21 @@ class IngestionResult:
     dedupe_key: str | None = None
     error: str | None = None
 
+    def to_summary(self) -> dict[str, object]:
+        summary = {
+            "source": self.source,
+            "status": self.status,
+            "fetched": self.records_fetched,
+            "written": self.records_written,
+            "skipped": self.records_skipped,
+            "failed": self.records_failed,
+        }
+
+        if self.error:
+            summary["error"] = self.error
+
+        return summary
+
 
 class IngestionPipeline:
     def __init__(self, storage: Storage, paths: StoragePaths):

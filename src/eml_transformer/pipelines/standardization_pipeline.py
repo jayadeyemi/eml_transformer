@@ -31,6 +31,18 @@ class StandardizationResult:
     error: str | None = None
     records: pd.DataFrame | None = None
 
+
+    def to_summary(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "status": self.status,
+            "read": self.records_read,
+            "out": self.records_out,
+            "failed": self.records_failed,
+            "silver": self.silver_key,
+            "error": self.error,
+        }
+
 class StandardizationPipeline:
     def __init__(
         self,

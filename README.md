@@ -19,7 +19,7 @@ This project collects and standardizes textual data sources such as:
 ## 1. Clone Repository
 
 ```bash
-git clone ...
+git clone https://github.com/jackyeung99/eml_transformer.git
 cd eml_transformer
 ```
 

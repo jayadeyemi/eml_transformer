@@ -22,6 +22,7 @@ class BackfillPipeline:
         start_date: str,
         end_date: str,
         window_days: int = 30,
+        seed_checkpoint: bool = False,
     ):
         results = {}
 
@@ -40,6 +41,7 @@ class BackfillPipeline:
                 start_date=start_date,
                 end_date=end_date,
                 window_days=window_days,
+                seed_checkpoint=seed_checkpoint,
             )
 
         return results
@@ -73,6 +75,12 @@ class BackfillPipeline:
 
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
+
+        if window_days < 1:
+            raise ValueError("window_days must be greater than or equal to 1")
+
+        if start > end:
+            raise ValueError("start_date must be before or equal to end_date")
 
         windows = list(
             self._iter_date_windows(
@@ -116,6 +124,12 @@ class BackfillPipeline:
         end: date,
         window_days: int,
     ):
+        if window_days < 1:
+            raise ValueError("window_days must be greater than or equal to 1")
+
+        if start > end:
+            raise ValueError("start must be before or equal to end")
+
         current = start
 
         while current <= end:

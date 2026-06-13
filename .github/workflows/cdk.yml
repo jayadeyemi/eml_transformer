@@ -1,0 +1,218 @@
+name: CDK Deployment Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      deployment_config:
+        description: Deployment config path
+        required: true
+        default: configs/deployments/aws-dev.yaml
+      deploy:
+        description: Deploy after synth
+        required: true
+        type: boolean
+        default: false
+      image_tag:
+        description: Docker image tag to use (defaults to commit SHA)
+        required: false
+
+env:
+  AWS_REGION: us-east-1
+  DEPLOYMENT_CONFIG: ${{ inputs.deployment_config || 'configs/deployments/aws-dev.yaml' }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[aws,test]"
+          python -m pip install -r infra/cdk/requirements.txt
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v
+
+      - name: Validate deployment config
+        run: eml_transformer config-validate-all --directory configs/deployments
+
+      - name: Render deployment matrix
+        run: eml_transformer deployment-matrix --deployment "$DEPLOYMENT_CONFIG"
+
+      - name: CDK synth
+        working-directory: infra/cdk
+        run: cdk synth -c deployment_config="$DEPLOYMENT_CONFIG"
+
+      - name: CDK diff (pull requests only)
+        if: github.event_name == 'pull_request'
+        working-directory: infra/cdk
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          # Diff is best-effort; requires AWS credentials. Skip gracefully if not configured.
+          if [ -n "$AWS_DEPLOY_ROLE_ARN" ]; then
+            cdk diff -c deployment_config="$DEPLOYMENT_CONFIG" || true
+          else
+            echo "AWS credentials not configured; skipping cdk diff."
+          fi
+
+  deploy:
+    needs: validate
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.deploy == true &&
+      !contains(fromJSON('["configs/deployments/aws-prod.yaml"]'), inputs.deployment_config)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[aws]"
+          python -m pip install -r infra/cdk/requirements.txt
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Determine image tag
+        id: image_tag
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::12}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Render runtime config
+        run: |
+          eml_transformer config-render \
+            --deployment "${{ inputs.deployment_config }}" \
+            --output configs/generated/ci.runtime.yaml
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin \
+              "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+
+      - name: Build and push Docker image
+        env:
+          IMAGE_TAG: ${{ steps.image_tag.outputs.tag }}
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          STACK_NAME="$(python -c "
+          from eml_transformer.deployment.config import load_deployment_config
+          c = load_deployment_config('${{ inputs.deployment_config }}')
+          print(c.config['infra']['stack_name'])
+          ")"
+          REPO_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${STACK_NAME}-collection"
+          docker build -t "eml-transformer:${IMAGE_TAG}" .
+          docker tag "eml-transformer:${IMAGE_TAG}" "${REPO_URL}:${IMAGE_TAG}"
+          docker push "${REPO_URL}:${IMAGE_TAG}"
+          echo "IMAGE_REF=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: CDK deploy
+        working-directory: infra/cdk
+        run: |
+          cdk deploy --require-approval never \
+            -c deployment_config="${{ inputs.deployment_config }}" \
+            -c image_tag="${{ steps.image_tag.outputs.tag }}"
+
+  deploy-prod:
+    needs: validate
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.deploy == true &&
+      inputs.deployment_config == 'configs/deployments/aws-prod.yaml'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[aws]"
+          python -m pip install -r infra/cdk/requirements.txt
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Determine image tag
+        id: image_tag
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::12}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Render runtime config
+        run: |
+          eml_transformer config-render \
+            --deployment configs/deployments/aws-prod.yaml \
+            --output configs/generated/ci-prod.runtime.yaml
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin \
+              "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+
+      - name: Build and push Docker image
+        env:
+          IMAGE_TAG: ${{ steps.image_tag.outputs.tag }}
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          REPO_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/eml-transformer-prod-collection"
+          docker build -t "eml-transformer:${IMAGE_TAG}" .
+          docker tag "eml-transformer:${IMAGE_TAG}" "${REPO_URL}:${IMAGE_TAG}"
+          docker push "${REPO_URL}:${IMAGE_TAG}"
+
+      - name: CDK deploy (production)
+        working-directory: infra/cdk
+        run: |
+          cdk deploy --require-approval never \
+            -c deployment_config="configs/deployments/aws-prod.yaml" \
+            -c image_tag="${{ steps.image_tag.outputs.tag }}"

@@ -313,3 +313,271 @@ External APIs
 | ML Features    |
 +----------------+
 ```
+
+## AWS CDK Option with Terraform Compatibility
+
+The AWS option separates durable infrastructure ownership from runtime collection behavior.
+AWS CDK in Python is the primary deployment path. Terraform is retained as a
+secondary compatibility/reference path and should not manage the same deployed
+environment as CDK unless resources are intentionally migrated.
+
+- **CDK owns durable AWS resources**: S3 buckets, SQS queues, DynamoDB tables, IAM roles, ECR repositories, AWS Batch job definitions, Step Functions workflows, EventBridge schedules, CloudWatch alarms, cost controls, and optional AWS Budgets alerts.
+- **Python AWS SDK runtime code uses existing resources**: it writes S3 objects, sends SQS messages, updates DynamoDB state, emits CloudWatch metrics, and starts Step Functions or Batch jobs.
+- **The SDK must not create durable infrastructure** such as buckets, queues, tables, IAM roles, schedules, or state machines.
+
+### Deployment Diagram
+
+```text
+Developer / CI
+    |
+    |  git push / pull request
+    v
+Repository
+    |
+    +--------------------------+
+    |                          |
+    | cdk synth/diff/deploy    | docker build/push
+    v                          v
+CloudFormation             Amazon ECR
+    |                      collection container image
+    |
+    | creates durable AWS resources
+    v
++--------------------------------------------------------------------+
+| AWS Account                                                        |
+|                                                                    |
+|  EventBridge Scheduler                                             |
+|        |                                                           |
+|        v                                                           |
+|  Step Functions acquisition workflow                               |
+|        |                                                           |
+|        v                                                           |
+|  AWS Batch / Fargate job queue <--------- pulls image from ECR      |
+|        |                                                           |
+|        +--> service-run ingest / standardize / embed / backfill     |
+|        |                                                           |
+|        +--> gdelt-discover --> SQS URL fetch queue                  |
+|                                  |                                 |
+|                                  v                                 |
+|                            article-fetch-worker                    |
+|                                                                    |
+|  S3 data lake: bronze / silver / gold / manifests                   |
+|  DynamoDB: run state / URL state / domain throttle                  |
+|  CloudWatch: logs / metrics / alarms                               |
+|  IAM: execution roles and least-privilege access                    |
++--------------------------------------------------------------------+
+```
+
+### Collection Microservices
+
+AWS runs the same pipeline stages as the local CLI by packaging the repository as one container image and selecting a service command at runtime.
+
+Supported collection services:
+
+- `ingest` collects bronze data for any registered source or all enabled sources.
+- `standardize` converts bronze data into silver `TextRecord` tables.
+- `embed` creates gold embeddings from silver data.
+- `backfill` runs windowed historical ingestion for sources that support backfill.
+- `run_all` runs ingestion, standardization, and embedding in sequence.
+- `gdelt_discovery` handles high-volume GDELT file discovery and URL queueing.
+- `url_fetch_worker` consumes queued URLs and stores fetched article payloads.
+
+This keeps the cloud execution model aligned with the preexisting `IngestionPipeline`, `StandardizationPipeline`, `EmbeddingPipeline`, `BackfillPipeline`, source registry, and storage abstraction.
+
+### Layered Deployment Config
+
+AWS deployments use deterministic YAML layering:
+
+```text
+configs/base.yaml
+configs/environments/<environment>.yaml
+configs/sources/<source>.yaml
+configs/deployments/<deployment>.yaml
+```
+
+Merge order is base, environment, selected source files, and finally the
+deployment file. `infra.engine: cdk` is the default for AWS. Runtime values are
+rendered with:
+
+```bash
+eml_transformer config-validate --deployment configs/deployments/aws-dev.yaml
+eml_transformer deployment-matrix --deployment configs/deployments/aws-dev.yaml
+eml_transformer config-render --deployment configs/deployments/aws-dev.yaml --output configs/generated/aws-dev.runtime.yaml
+```
+
+`configs/aws.example.yaml` intentionally contains fake `123456789012`
+account/resource values for public documentation only. Real generated runtime
+configs under `configs/generated/*.yaml` should not be committed; use CDK
+outputs, environment variables, CI secrets, or ignored generated YAML for real
+ARNs.
+
+### AWS Security Defaults
+
+- S3 data lake buckets block public access.
+- SQS queues are not given public queue policies.
+- Step Functions and Batch job resources are invoked through IAM permissions,
+  not public invocation policies.
+- Runtime containers receive temporary permissions through IAM roles, not
+  long-lived AWS keys.
+- CDK and Terraform must not manage the same live environment unless resources
+  have been explicitly migrated/imported.
+
+### AWS Acquisition Flow
+
+```text
+EventBridge Scheduler
+      |
+      v
+Step Functions acquisition workflow
+      |
+      v
+AWS Batch / Fargate: gdelt-discover
+      |
+      +--> S3 bronze/gdelt candidate URL manifests
+      +--> DynamoDB URL state table
+      +--> SQS URL fetch queue
+               |
+               v
+        AWS Batch / Fargate: article-fetch-worker
+               |
+               +--> S3 bronze/articles raw HTML/text/metadata
+               +--> DynamoDB fetch state updates
+               +--> SQS DLQ for repeated failures
+```
+
+For smaller API sources such as MISO, NewsAPI, IEM AFOS, and Weather Alerts, AWS Batch can run the generic collection service directly:
+
+```text
+AWS Batch / Fargate: service-run --service ingest --source <source>
+AWS Batch / Fargate: service-run --service standardize --source <source>
+AWS Batch / Fargate: service-run --service embed --source <source>
+AWS Batch / Fargate: service-run --service backfill --source <source>
+```
+
+### Storage Layout
+
+The AWS data lake preserves the medallion model, but it has two namespaces:
+generic registry sources use `StoragePaths`, while GDELT and article fetch use
+specialized acquisition keys. See `docs/aws_s3_layout.md` for the authoritative
+folder contract.
+
+```text
+s3://<bucket>/<prefix>/bronze/source=<source>/records.jsonl
+s3://<bucket>/<prefix>/bronze/source=<source>/records.jsonl.parts/<uuid>.jsonl
+s3://<bucket>/<prefix>/metadata/dedupe/source=<source>.json
+s3://<bucket>/<prefix>/metadata/checkpoint/source=<source>.json
+s3://<bucket>/<prefix>/silver/source=<source>/records.parquet
+s3://<bucket>/<prefix>/gold/model=<model>/source=<source>/embeddings.parquet
+s3://<bucket>/<prefix>/bronze/gdelt/
+s3://<bucket>/<prefix>/bronze/articles/
+s3://<bucket>/<prefix>/manifests/
+```
+
+`<prefix>` is omitted when `storage.prefix` is empty. Current AWS deployment
+configs set `paths.root: .`, so generic paths do not include a leading
+`data/` folder.
+
+For S3 generic ingestion, `records.jsonl` can be a marker object and appended
+rows can live under `records.jsonl.parts/`. The S3 reader loads both locations.
+
+### Archive And Recovery
+
+CDK applies archive lifecycle rules to `s3://<bucket>/bronze/` because
+bronze raw data is the largest and easiest layer to regenerate from downstream
+processing. The default lifecycle is:
+
+```text
+0-90 days       S3 Standard
+90-365 days     S3 Glacier Instant Retrieval
+>365 days       S3 Glacier Deep Archive
+```
+
+Silver, gold, and manifests are left out of the archive rule by default so
+normal standardization, modeling, and audit reads do not need an archive restore
+step. This can be changed later with additional lifecycle rules if storage cost
+requires it.
+
+Rollback relies on S3 versioning plus explicit restore operations:
+
+```text
+Deep Archive object
+      |
+      v
+RestoreObject request
+      |
+      v
+Temporary restored copy becomes readable
+      |
+      +--> copy to restore-staging/ for inspection
+      |
+      +--> copy over the same key as a new Standard current version
+```
+
+The second path is the rollback path. Because bucket versioning is enabled, the
+copy creates a new current version while retaining the archived prior version in
+history. For bulk recovery, use S3 Batch Operations with an inventory or CSV
+manifest rather than restoring keys one at a time.
+
+### CLI Commands
+
+The collection services are exposed through CLI commands:
+
+```bash
+eml_transformer service-run --config configs/generated/aws-dev.runtime.yaml --service ingest --source weather_alerts
+eml_transformer service-run --config configs/generated/aws-dev.runtime.yaml --service standardize --source weather_alerts
+eml_transformer service-run --config configs/generated/aws-dev.runtime.yaml --service embed --source weather_alerts
+eml_transformer service-run --config configs/generated/aws-dev.runtime.yaml --service backfill --source iem_afos --start-date 2026-01-01 --end-date 2026-01-07
+eml_transformer gdelt-discover --config configs/generated/aws-dev.runtime.yaml --date today
+eml_transformer gdelt-enqueue-urls --config configs/generated/aws-dev.runtime.yaml --key bronze/gdelt/candidate_urls/table=gkg/date=YYYY-MM-DD/timestamp=YYYYMMDDHHMMSS/parser_version=gdelt_gkg_v1/filter_version=weather_outage_us_v1/candidate_urls.jsonl
+eml_transformer article-fetch-worker --config configs/generated/aws-dev.runtime.yaml --max-messages 50
+eml_transformer aws-start-service --config configs/generated/aws-dev.runtime.yaml --service ingest --source weather_alerts
+eml_transformer aws-start-service --config configs/generated/aws-dev.runtime.yaml --service gdelt_discovery --date today --state-machine
+eml_transformer aws-restore-s3-object --config configs/generated/aws-dev.runtime.yaml --key bronze/gdelt/raw/table=gkg/date=YYYY-MM-DD/timestamp=YYYYMMDDHHMMSS/YYYYMMDDHHMMSS.gkg.csv.zip
+eml_transformer aws-s3-restore-status --config configs/generated/aws-dev.runtime.yaml --key bronze/gdelt/raw/table=gkg/date=YYYY-MM-DD/timestamp=YYYYMMDDHHMMSS/YYYYMMDDHHMMSS.gkg.csv.zip
+eml_transformer aws-rehydrate-s3-object --config configs/generated/aws-dev.runtime.yaml --key bronze/gdelt/raw/table=gkg/date=YYYY-MM-DD/timestamp=YYYYMMDDHHMMSS/YYYYMMDDHHMMSS.gkg.csv.zip
+```
+
+CDK/CloudFormation outputs should be rendered into a runtime YAML for local
+testing or injected as environment variables in AWS Batch:
+
+```text
+DATA_BUCKET
+STORAGE_PREFIX
+URL_FETCH_QUEUE_URL
+ARTICLE_URL_QUEUE_URL
+URL_STATE_TABLE
+RUN_STATE_TABLE
+DOMAIN_THROTTLE_TABLE
+STATE_MACHINE_ARN
+SOURCE_WORKFLOW_ARN
+BACKFILL_WORKFLOW_ARN
+BATCH_JOB_QUEUE
+GDELT_MAX_URLS_PER_RUN
+BATCH_JOB_DEFINITION
+BATCH_JOB_DEFINITION_INGEST
+BATCH_JOB_DEFINITION_STANDARDIZE
+BATCH_JOB_DEFINITION_EMBED
+BATCH_JOB_DEFINITION_BACKFILL
+BATCH_JOB_DEFINITION_RUN_ALL
+BATCH_JOB_DEFINITION_GDELT_DISCOVERY
+BATCH_JOB_DEFINITION_URL_FETCH_WORKER
+BATCH_JOB_DEFINITION_S3_RESTORE_OPERATOR
+AWS_REGION
+INFRA_STACK
+CDK_STACK
+TERRAFORM_STACK
+```
+
+### Operational Defaults
+
+- GDELT discovery is chunked by 15-minute GKG files.
+- Raw GDELT files are cached through the configured `Storage` backend, so the same logic works for local files, S3, or another future storage implementation.
+- Parsed GDELT candidate URL outputs are keyed by source timestamp plus parser/filter version, not by run ID, so unchanged files can be reused across runs.
+- Generic registry sources currently write one bronze JSONL marker plus S3 append parts, one silver parquet, and one gold parquet per source/model. They are not partitioned by run date.
+- URL deduplication is based on canonicalized URL hashes.
+- DynamoDB conditional writes protect the SQS queue from duplicate article URL messages.
+- Article fetch workers delete SQS messages only after successful S3 writes.
+- Failed fetches remain retryable and move to the dead-letter queue according to the infrastructure SQS redrive policy.
+- Run-state records use `run_id` and `job_type` so multi-step workflows do not overwrite their own state.
+- CloudWatch metrics are best effort and should not fail ingestion.
+- Dev schedules are disabled by default; prod may enable hourly GDELT acquisition through the deployment YAML.

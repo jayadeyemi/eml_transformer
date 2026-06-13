@@ -62,7 +62,13 @@ If `make` is unavailable on your system, run:
 
 ```bash
 python -m pip install -r requirements.txt
-python -m pip install -e .
+```
+
+`requirements.txt` installs the local package with the AWS runtime extra. For
+embedding/modeling work, install the optional HPC dependencies separately:
+
+```bash
+python -m pip install -e .[hpc]
 ```
 
 ---
@@ -149,7 +155,10 @@ eml_transformer backfill   --source newsapi   --start-date 2026-04-20   --end-da
 ** this command is limited to data sources with supports_backfill=True and is also rate limited depending on source 
 
 # Output Structure
-The textual ingestion pipeline is built around the medallion architecture with the following data design structure 
+The textual ingestion pipeline is built around a medallion architecture.
+Local runs normally write under `data/`; AWS deployment configs currently use
+`paths.root: .`, so S3 keys start at `bronze/`, `silver/`, `gold/`, and
+`metadata/`.
 
 
 ### Bronze Layer
@@ -157,23 +166,30 @@ The textual ingestion pipeline is built around the medallion architecture with t
 Raw API responses.
 
 ```text
-data/bronze/source=
+data/bronze/source=<source>/records.jsonl
 ```
+
+In S3, appended generic source rows may be stored in companion part files under
+`bronze/source=<source>/records.jsonl.parts/`; the S3 reader loads the marker
+object and all part files.
 
 ### Silver Layer
 
 Cleaned and standardized records.
 
 ```text
-data/silver/source=
+data/silver/source=<source>/records.parquet
 ```
 
 ### Gold Layer 
 text embeddings 
 
 ```text 
-data/gold/
+data/gold/model=<model>/source=<source>/embeddings.parquet
 ```
+
+For AWS-specific GDELT, article fetch, manifest, restore, and lifecycle paths,
+see `docs/aws_s3_layout.md`.
 
 # Documentation
 
@@ -186,6 +202,7 @@ docs/
 Important guides:
 
 - `docs/design_principles.md`
-- `docs/project_structure` 
+- `docs/project_structure.md`
 - `docs/ingestion_pipeline.md`
-
+- `docs/aws_s3_layout.md`
+- `docs/aws_deployment_security.md`

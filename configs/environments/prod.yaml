@@ -1,0 +1,12 @@
+infra:
+  environment: prod
+
+cost:
+  monthly_budget_usd: 250
+  log_retention_days: 90
+
+services:
+  gdelt_discovery:
+    schedule:
+      enabled: true
+      expression: rate(1 hour)

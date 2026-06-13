@@ -1,0 +1,8 @@
+infra:
+  environment: dev
+
+cost:
+  monthly_budget_usd: 50
+  log_retention_days: 14
+
+services: {}

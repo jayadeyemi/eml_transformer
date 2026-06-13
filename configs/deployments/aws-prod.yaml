@@ -1,0 +1,39 @@
+deployment:
+  name: aws-prod
+  base_config: configs/base.yaml
+  environment_config: configs/environments/prod.yaml
+  source_configs:
+    - configs/sources/gdelt.yaml
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+runtime:
+  config_path: configs/generated/aws-prod.runtime.yaml
+
+infra:
+  engine: cdk
+  stack_name: eml-transformer-prod
+  account_id: null
+  region: us-east-1
+  environment: prod
+
+cost:
+  monthly_budget_usd: 250
+  alert_emails: []
+  allow_nat_gateway: false
+
+services:
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    schedule:
+      enabled: true
+      expression: rate(1 hour)
+  url_fetch_worker:
+    limits:
+      max_messages: 200
+      request_delay_seconds: 1
+      output_batch_size: 250
+      output_format: jsonl.gz

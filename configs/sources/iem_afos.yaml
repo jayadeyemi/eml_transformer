@@ -1,0 +1,22 @@
+sources:
+  iem_afos:
+    enabled: true
+    pil: null
+    wfos:
+      - IND
+      - IWX
+      - LOT
+      - ILX
+      - LSX
+      - DVN
+      - DMX
+    product_types:
+      - AFD
+      - HWO
+      - NPW
+      - WSW
+      - LSR
+      - SPS
+    limit: 100
+    fmt: text
+    timeout: 30

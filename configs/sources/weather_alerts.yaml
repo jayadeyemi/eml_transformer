@@ -1,0 +1,18 @@
+sources:
+  weather_alerts:
+    enabled: true
+    areas:
+      - IN
+      - IL
+      - MI
+      - OH
+      - KY
+      - WI
+      - MN
+      - IA
+      - MO
+      - AR
+      - LA
+      - MS
+      - ND
+      - SD

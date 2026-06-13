@@ -1,0 +1,7 @@
+sources:
+  gdelt:
+    enabled: true
+    acquisition:
+      max_files: null
+      max_urls_per_run: null
+      parser_version: gkg-weather-outage-v1

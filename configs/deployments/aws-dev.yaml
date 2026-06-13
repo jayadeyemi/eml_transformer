@@ -1,0 +1,39 @@
+deployment:
+  name: aws-dev
+  base_config: configs/base.yaml
+  environment_config: configs/environments/dev.yaml
+  source_configs:
+    - configs/sources/gdelt.yaml
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+runtime:
+  config_path: configs/generated/aws-dev.runtime.yaml
+
+infra:
+  engine: cdk
+  stack_name: eml-transformer-dev
+  account_id: null
+  region: us-east-1
+  environment: dev
+
+cost:
+  monthly_budget_usd: 50
+  alert_emails: []
+  allow_nat_gateway: false
+
+services:
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    schedule:
+      enabled: false
+      expression: rate(1 hour)
+  url_fetch_worker:
+    limits:
+      max_messages: 50
+      request_delay_seconds: 1
+      output_batch_size: 100
+      output_format: jsonl.gz

@@ -1,0 +1,41 @@
+deployment:
+  name: hpc-dev
+  base_config: configs/base.yaml
+  environment_config: configs/environments/dev.yaml
+  source_configs:
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+infra:
+  engine: hpc
+  stack_name: eml-transformer-hpc-dev
+  account_id: null
+  region: local
+  environment: dev
+
+storage:
+  backend: local
+  base_dir: data
+
+hpc:
+  scheduler: slurm
+  partition: general
+  account: null
+  default_time: "02:00:00"
+  embeddings:
+    preferred: true
+    gpu: true
+
+services:
+  gdelt_discovery:
+    enabled: false
+  url_fetch_worker:
+    enabled: false
+  embed:
+    enabled: true
+    compute:
+      vcpu: 4
+      memory_mib: 32768
+      timeout_seconds: 14400

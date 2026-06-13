@@ -1,0 +1,62 @@
+deployment:
+  name: aws-smoke
+  base_config: configs/base.yaml
+  environment_config: configs/environments/dev.yaml
+  source_configs:
+    - configs/sources/gdelt.yaml
+
+runtime:
+  config_path: configs/generated/aws-smoke.runtime.yaml
+
+infra:
+  engine: cdk
+  stack_name: eml-transformer-smoke
+  account_id: null
+  region: us-east-1
+  environment: dev
+
+network:
+  subnet_ids: []
+  security_group_ids: []
+  assign_public_ip: true
+
+cost:
+  monthly_budget_usd: 5
+  alert_emails: []
+  allow_nat_gateway: false
+  max_batch_vcpus: 2
+  log_retention_days: 7
+
+services:
+  ingest:
+    enabled: false
+  standardize:
+    enabled: false
+  embed:
+    enabled: false
+  backfill:
+    enabled: false
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    enabled: true
+    schedule:
+      enabled: false
+      expression: null
+  url_fetch_worker:
+    enabled: true
+    limits:
+      max_messages: 5
+      request_delay_seconds: 1
+      output_batch_size: 5
+      output_format: jsonl.gz
+  s3_restore_operator:
+    enabled: true
+
+sources:
+  gdelt:
+    enabled: true
+    acquisition:
+      max_files: 1
+      max_urls_per_run: 5
+      parser_version: gkg-weather-outage-v1

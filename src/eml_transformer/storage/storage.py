@@ -13,7 +13,6 @@ logger = get_logger(__name__)
 
 
 import pandas as pd
-import pyarrow.parquet as pq
 
 
 class Storage:
@@ -58,6 +57,26 @@ class Storage:
 
     def write_json(self, obj: Any, key: str) -> None:
         logger.info(f"Writing json to {key}")
+        raise NotImplementedError
+
+    def read_bytes(self, key: str) -> bytes:
+        logger.debug(f"reading bytes from file: {key}")
+        raise NotImplementedError
+
+    def write_bytes(self, data: bytes, key: str) -> None:
+        logger.info(f"Writing {len(data)} bytes to {key}")
+        raise NotImplementedError
+
+    def write_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        logger.info(f"Writing {len(rows)} rows to jsonl {key}")
+        raise NotImplementedError
+
+    def append_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        logger.info(f"Appending {len(rows)} rows to jsonl {key}")
+        raise NotImplementedError
+
+    def read_jsonl(self, key: str) -> list[dict[str, Any]]:
+        logger.debug(f"reading jsonl file: {key}")
         raise NotImplementedError
     
 
@@ -161,6 +180,28 @@ class LocalStorage(Storage):
             json.dump(obj, f, indent=2, sort_keys=True, default=str)
         tmp.replace(path)
 
+    def read_bytes(self, key: str) -> bytes:
+        return self._path(key).read_bytes()
+
+    def write_bytes(self, data: bytes, key: str) -> None:
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+
+    def write_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+
+        with tmp.open("w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False, default=str))
+                f.write("\n")
+
+        tmp.replace(path)
+
     def append_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +285,14 @@ class S3Storage(Storage):
         if self._fs is not None:
             return
 
+        try:
+            import s3fs
+        except ImportError as exc:
+            raise ImportError(
+                "S3Storage requires the optional dependency 's3fs'. "
+                "Install project dependencies or run: python -m pip install s3fs"
+            ) from exc
+
 
         client_kwargs = {}
         if self.region:
@@ -258,6 +307,9 @@ class S3Storage(Storage):
         key = key.lstrip("/")
         pref = self.prefix.strip("/")
         return f"{pref}/{key}" if pref else key
+
+    def object_key(self, key: str) -> str:
+        return self._key(key)
 
     def _uri(self, key: str) -> str:
         return f"s3://{self.bucket}/{self._key(key)}"
@@ -300,13 +352,14 @@ class S3Storage(Storage):
         return sorted(out)
     
     def read_parquet(self, key: str) -> pd.DataFrame:
+        self._init_fs()
         # pandas will use s3fs via fsspec if installed
         return pd.read_parquet(
-                self._uri(key),
-                engine="pyarrow",
-                filesystem=self._fs,
-                partitioning=None,   # <-- disables hive inference
-            )
+            self._uri(key),
+            engine="pyarrow",
+            filesystem=self._fs,
+            partitioning=None,   # <-- disables hive inference
+        )
 
     def write_parquet(self, df: pd.DataFrame, key: str) -> None:
         self._init_fs()
@@ -380,8 +433,6 @@ class S3Storage(Storage):
 
     def write_json(self, obj: Any, key: str) -> None:
         self._init_fs()
-        final_uri = self._uri(key)
-
         tmp_key = f"{self._key(key)}.__tmp__{uuid.uuid4().hex}"
         tmp_uri = f"s3://{self.bucket}/{tmp_key}"
 
@@ -396,6 +447,82 @@ class S3Storage(Storage):
             self._fs.rm(src)
         except Exception:
             pass
+
+    def read_bytes(self, key: str) -> bytes:
+        self._init_fs()
+
+        with self._fs.open(self._uri(key), "rb") as f:
+            return f.read()
+
+    def write_bytes(self, data: bytes, key: str) -> None:
+        self._init_fs()
+        tmp_key = f"{self._key(key)}.__tmp__{uuid.uuid4().hex}"
+        tmp_uri = f"s3://{self.bucket}/{tmp_key}"
+
+        with self._fs.open(tmp_uri, "wb") as f:
+            f.write(data)
+
+        src = f"{self.bucket}/{tmp_key}"
+        dst = f"{self.bucket}/{self._key(key)}"
+        self._fs.copy(src, dst)
+
+        try:
+            self._fs.rm(src)
+        except Exception:
+            pass
+
+    def write_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        self._init_fs()
+        tmp_key = f"{self._key(key)}.__tmp__{uuid.uuid4().hex}"
+        tmp_uri = f"s3://{self.bucket}/{tmp_key}"
+
+        with self._fs.open(tmp_uri, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False, default=str))
+                f.write("\n")
+
+        src = f"{self.bucket}/{tmp_key}"
+        dst = f"{self.bucket}/{self._key(key)}"
+        self._fs.copy(src, dst)
+
+        try:
+            self._fs.rm(src)
+        except Exception:
+            pass
+
+    def append_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+
+        if not self.exists(key):
+            self.write_bytes(b"", key)
+
+        part_key = f"{key}.parts/{uuid.uuid4().hex}.jsonl"
+        self.write_jsonl(part_key, rows)
+
+    def read_jsonl(self, key: str) -> list[dict[str, Any]]:
+        self._init_fs()
+
+        if not self.exists(key):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        with self._fs.open(self._uri(key), "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+
+                if line:
+                    rows.append(json.loads(line))
+
+        for part_key in self.list(f"{key}.parts/"):
+            with self._fs.open(self._uri(part_key), "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+
+                    if line:
+                        rows.append(json.loads(line))
+
+        return rows
 
     def read_pickle(self, key: str) -> Any:
         """

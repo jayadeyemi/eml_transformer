@@ -1,0 +1,3 @@
+sources:
+  miso_notifications:
+    enabled: true

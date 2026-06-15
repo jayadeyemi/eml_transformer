@@ -12,10 +12,27 @@ BUILD_EXTRAS="${BUILD_EXTRAS:-aws,test}"
 
 mkdir -p "${RESULTS_DIR}"
 
+if ! command -v aws >/dev/null 2>&1; then
+    for aws_dir in /snap/bin "/mnt/c/Program Files/Amazon/AWSCLIV2"; do
+        if [[ -x "${aws_dir}/aws" || -x "${aws_dir}/aws.exe" ]]; then
+            export PATH="${aws_dir}:${PATH}"
+            break
+        fi
+    done
+fi
+
+if ! command -v aws >/dev/null 2>&1 && ! command -v aws.exe >/dev/null 2>&1; then
+    echo "AWS CLI is required on PATH" >&2
+    exit 1
+fi
+
 log()  { echo "[$(date -u +%H:%M:%S)] $*"; }
 info() { echo "[$(date -u +%H:%M:%S)] INFO  $*"; }
 warn() { echo "[$(date -u +%H:%M:%S)] WARN  $*" >&2; }
 fail() { echo "[$(date -u +%H:%M:%S)] FAIL  $*" >&2; exit 1; }
+
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+[[ -n "${PYTHON_BIN}" ]] || fail "python3 or python is required"
 
 declare -A PHASE_RESULTS
 
@@ -54,14 +71,14 @@ summarize_results() {
 
 # SSO check runs on host (CDK and ECR push require it)
 check_sso_token() {
-    info "Checking AWS SSO token for profile: ${AWS_PROFILE}"
+    info "Checking AWS SSO token for profile: ${AWS_PROFILE}" >&2
     if ! aws sts get-caller-identity --profile "${AWS_PROFILE}" --output text &>/dev/null; then
         warn "SSO token expired. Running: aws sso login --profile ${AWS_PROFILE}"
         aws sso login --profile "${AWS_PROFILE}"
     fi
     local account
     account="$(aws sts get-caller-identity --profile "${AWS_PROFILE}" --query Account --output text)"
-    info "Authenticated as account: ${account}"
+    info "Authenticated as account: ${account}" >&2
     echo "${account}"
 }
 

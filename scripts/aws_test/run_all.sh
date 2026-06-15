@@ -11,9 +11,12 @@
 #   BUILD_EXTRAS  pip extras for Docker build (default: aws,test)
 #   GDELT_DATE    Date for GDELT tests (default: today UTC)
 #   NEWSAPI_KEY   NewsAPI key (optional; skipped if absent)
+#   NEWSAPI_SECRET_NAME Secrets Manager secret name containing the NewsAPI key
 #   BATCH_TIMEOUT Seconds to poll Batch jobs (default: 300)
 #   SKIP_PHASE0   Set to 1 to skip pre-flight (assumes CDK already deployed)
 #   SKIP_BATCH    Set to 1 to skip Phase 7 Batch job submission
+#   RESET_STACK   Set to 1 to run guarded destructive stack reset first
+#   SKIP_E2E      Set to 1 to skip Phase 8 full workflow/schedule diagnostics
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,11 +24,15 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 SKIP_PHASE0="${SKIP_PHASE0:-0}"
 SKIP_BATCH="${SKIP_BATCH:-0}"
+RESET_STACK="${RESET_STACK:-0}"
+SKIP_E2E="${SKIP_E2E:-0}"
 
 for arg in "$@"; do
     case "${arg}" in
         --skip-phase0) SKIP_PHASE0=1 ;;
         --skip-batch)  SKIP_BATCH=1 ;;
+        --reset-stack) RESET_STACK=1 ;;
+        --skip-e2e)    SKIP_E2E=1 ;;
         *) warn "Unknown argument: ${arg}" ;;
     esac
 done
@@ -66,6 +73,14 @@ run_phase() {
         warn "  FAIL ${name} (exit ${PHASE_EXIT[${name}]})"
     fi
 }
+
+# Optional destructive reset before any deploy.
+if [[ "${RESET_STACK}" -eq 1 ]]; then
+    run_phase "Phase R: Reset Smoke Stack" "reset_smoke_stack.sh"
+    if [[ "${PHASE_EXIT[Phase R: Reset Smoke Stack]}" -ne 0 ]]; then
+        fail "Reset failed -- cannot proceed."
+    fi
+fi
 
 # Phase 0: Pre-flight (blocking)
 if [[ "${SKIP_PHASE0}" -eq 0 ]]; then
@@ -120,6 +135,14 @@ wait "${PID_P5}" && PHASE_EXIT["Phase 5: GDELT"]=0     || PHASE_EXIT["Phase 5: G
 # Phase 6: Pipeline (needs Phase 4+5 data)
 run_phase "Phase 6: Pipeline" "phase6_pipeline.sh"
 
+# Phase 8: full Step Functions, schedule, SNS, and diagnostics path
+if [[ "${SKIP_E2E}" -eq 0 ]]; then
+    run_phase "Phase 8: Full AWS E2E" "phase8_e2e.sh"
+else
+    log "Skipping Phase 8 (SKIP_E2E=1)"
+    PHASE_EXIT["Phase 8: Full AWS E2E"]=0
+fi
+
 # Final summary
 echo ""
 echo "=================================================="
@@ -127,6 +150,7 @@ echo "  FINAL RESULTS"
 echo "=================================================="
 OVERALL_FAIL=0
 for phase in \
+    "Phase R: Reset Smoke Stack" \
     "Phase 0: Pre-flight" \
     "Phase 1: Static" \
     "Phase 2: Container" \
@@ -134,7 +158,8 @@ for phase in \
     "Phase 4: Ingestion" \
     "Phase 5: GDELT" \
     "Phase 6: Pipeline" \
-    "Phase 7: Batch"
+    "Phase 7: Batch" \
+    "Phase 8: Full AWS E2E"
 do
     code="${PHASE_EXIT[${phase}]:-0}"
     if [[ "${code}" -eq 0 ]]; then

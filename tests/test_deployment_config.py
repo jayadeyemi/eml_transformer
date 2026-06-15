@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
+from eml_transformer.cli import _has_failed_result
 from eml_transformer.cloud.aws.config import load_aws_runtime_config
 from eml_transformer.deployment.config import (
     _pascal_to_snake,
@@ -12,6 +13,8 @@ from eml_transformer.deployment.config import (
     render_runtime_config_from_cfn_outputs,
     validate_deployment_config,
 )
+from eml_transformer.ingestion.sources.newsapi import NewsAPISource
+from eml_transformer.utils.config import build_source_configs
 
 
 class DeploymentConfigTests(unittest.TestCase):
@@ -46,6 +49,28 @@ class DeploymentConfigTests(unittest.TestCase):
             services["url_fetch_worker"]["job_definition_env_key"],
             "BATCH_JOB_DEFINITION_URL_FETCH_WORKER",
         )
+
+    def test_smoke_config_renders_notifications_and_runtime_secrets_contract(self):
+        loaded = load_deployment_config("configs/deployments/aws-smoke.yaml")
+        errors = validate_deployment_config(loaded.config)
+        runtime = render_runtime_config(loaded.config)
+        env = build_runtime_environment(loaded.config)
+        aws_config = load_aws_runtime_config(runtime)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            runtime["notifications"]["sns_topic_arn"],
+            "arn:aws:sns:us-east-1:123456789012:eml-transformer-smoke-notifications",
+        )
+        self.assertEqual(
+            env["SNS_TOPIC_ARN"],
+            "arn:aws:sns:us-east-1:123456789012:eml-transformer-smoke-notifications",
+        )
+        self.assertEqual(
+            loaded.config["runtime_secrets"]["NEWSAPI_KEY"]["secret_arn_env"],
+            "NEWSAPI_SECRET_ARN",
+        )
+        self.assertEqual(aws_config.sns_topic_arn, runtime["notifications"]["sns_topic_arn"])
 
     def test_infra_stack_roundtrips_through_load_aws_runtime_config(self):
         aws_config = load_aws_runtime_config(
@@ -210,6 +235,7 @@ class RenderFromCfnOutputsTests(unittest.TestCase):
             {"OutputKey": "DomainThrottleTable", "OutputValue": "my-stack-domain-throttle"},
             {"OutputKey": "BatchJobQueue", "OutputValue": "arn:aws:batch:us-east-1:123:job-queue/q"},
             {"OutputKey": "StateMachineArn", "OutputValue": "arn:aws:states:us-east-1:123:stateMachine:sm"},
+            {"OutputKey": "SnsTopicArn", "OutputValue": "arn:aws:sns:us-east-1:123:topic"},
             {"OutputKey": "IngestJobDefinition", "OutputValue": "arn:aws:batch:::ingest"},
             {"OutputKey": "StandardizeJobDefinition", "OutputValue": "arn:aws:batch:::standardize"},
             {"OutputKey": "RuntimeEnvironment", "OutputValue": json.dumps(runtime_env)},
@@ -225,6 +251,7 @@ class RenderFromCfnOutputsTests(unittest.TestCase):
         self.assertEqual(result["state"]["url_table"], "my-stack-url-state")
         self.assertEqual(result["state"]["domain_throttle_table"], "my-stack-domain-throttle")
         self.assertEqual(result["orchestration"]["state_machine_arn"], "arn:aws:states:us-east-1:123:stateMachine:sm")
+        self.assertEqual(result["notifications"]["sns_topic_arn"], "arn:aws:sns:us-east-1:123:topic")
         self.assertIn("ingest", result["orchestration"]["batch_job_definitions"])
         self.assertIn("standardize", result["orchestration"]["batch_job_definitions"])
 
@@ -267,6 +294,56 @@ class PascalToSnakeTests(unittest.TestCase):
         self.assertEqual(_pascal_to_snake("GdeltDiscovery"), "gdelt_discovery")
         self.assertEqual(_pascal_to_snake("S3RestoreOperator"), "s3_restore_operator")
         self.assertEqual(_pascal_to_snake("UrlFetchWorker"), "url_fetch_worker")
+
+
+class RuntimeSourceBehaviorTests(unittest.TestCase):
+    def test_gdelt_acquisition_source_is_skipped_by_generic_source_config(self):
+        configs = build_source_configs(
+            {
+                "sources": {
+                    "gdelt": {
+                        "enabled": True,
+                        "acquisition": {"max_files": 1},
+                    },
+                    "iem_afos": {
+                        "enabled": True,
+                        "wfos": ["IND"],
+                        "product_types": ["AFD"],
+                    },
+                }
+            }
+        )
+
+        self.assertNotIn("gdelt", configs)
+        self.assertIn("iem_afos", configs)
+
+    def test_newsapi_fetch_fails_fast_without_api_key(self):
+        source = NewsAPISource(api_key=None, query="grid")
+
+        with self.assertRaisesRegex(EnvironmentError, "NEWSAPI_KEY"):
+            source.fetch_page(page=1)
+
+    def test_service_run_failure_detection_recurses_nested_results(self):
+        self.assertTrue(
+            _has_failed_result(
+                {
+                    "service": "backfill",
+                    "results": {
+                        "newsapi": [{"status": "failed", "source": "newsapi"}],
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            _has_failed_result(
+                {
+                    "service": "backfill",
+                    "results": {
+                        "iem_afos": [{"status": "success", "source": "iem_afos"}],
+                    },
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

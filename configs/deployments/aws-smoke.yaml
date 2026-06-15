@@ -4,6 +4,10 @@ deployment:
   environment_config: configs/environments/dev.yaml
   source_configs:
     - configs/sources/gdelt.yaml
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
 
 runtime:
   config_path: configs/generated/aws-smoke.runtime.yaml
@@ -22,27 +26,56 @@ network:
 
 cost:
   monthly_budget_usd: 5
-  alert_emails: []
+  alert_emails:
+    - boadeyem@iu.edu
   allow_nat_gateway: false
   max_batch_vcpus: 2
   log_retention_days: 7
+  cost_anomaly_detection: false
+
+notifications:
+  sns:
+    enabled: true
+    topic_name: eml-transformer-smoke-notifications
+    email_recipients:
+      - boadeyem@iu.edu
+
+runtime_secrets:
+  NEWSAPI_KEY:
+    secret_arn_env: NEWSAPI_SECRET_ARN
+    services:
+      - ingest
+      - backfill
+      - run_all
 
 services:
   ingest:
-    enabled: false
+    enabled: true
+    source: all
+    schedule:
+      enabled: true
+      expression: rate(10 minutes)
   standardize:
-    enabled: false
+    enabled: true
+    source: all
+    schedule:
+      enabled: false
+      expression: null
   embed:
     enabled: false
   backfill:
-    enabled: false
+    enabled: true
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
   run_all:
     enabled: false
   gdelt_discovery:
     enabled: true
     schedule:
-      enabled: false
-      expression: null
+      enabled: true
+      expression: rate(10 minutes)
   url_fetch_worker:
     enabled: true
     limits:

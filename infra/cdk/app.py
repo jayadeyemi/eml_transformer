@@ -35,6 +35,31 @@ infra = loaded.config["infra"]
 image_tag = app.node.try_get_context("image_tag") or "latest"
 loaded.config.setdefault("runtime", {})["image_tag"] = image_tag
 
+schedule_test_expression = (
+    app.node.try_get_context("schedule_test_expression")
+    or os.environ.get("SCHEDULE_TEST_EXPRESSION")
+)
+if schedule_test_expression:
+    services = loaded.config.setdefault("services", {})
+    for service_name in ("gdelt_discovery", "ingest"):
+        service = services.setdefault(service_name, {})
+        schedule = service.setdefault("schedule", {})
+        if schedule.get("enabled", False):
+            schedule["expression"] = schedule_test_expression
+
+subnet_ids = os.environ.get("BATCH_SUBNET_IDS")
+security_group_ids = os.environ.get("BATCH_SECURITY_GROUP_IDS")
+if subnet_ids or security_group_ids:
+    network = loaded.config.setdefault("network", {})
+    if subnet_ids:
+        network["subnet_ids"] = [
+            item.strip() for item in subnet_ids.split(",") if item.strip()
+        ]
+    if security_group_ids:
+        network["security_group_ids"] = [
+            item.strip() for item in security_group_ids.split(",") if item.strip()
+        ]
+
 # Honour an explicit AWS profile passed via context:
 #   cdk synth -c deployment_config=... -c aws_profile=eml-dev
 # Falls back to the AWS_PROFILE env var if not supplied.

@@ -144,12 +144,17 @@ class IngestionPipeline:
 
             self._save_seen(dedupe_key, seen_hashes)
 
+            # Update checkpoint for incremental sources when:
+            # - update_checkpoint is True (not a backfill window)
+            # - Records were actually fetched (no-op runs should not advance)
+            # When from_date/to_date are explicit, the checkpoint is based on
+            # the max published_at found in records (not the window boundary),
+            # which is correct for sources like NewsAPI that may return articles
+            # published earlier than the requested from_date.
             should_update_checkpoint = (
                 source.update_mode == "incremental"
                 and update_checkpoint
-                and from_date is None
-                and to_date is None
-                and raw_records
+                and len(raw_records) > 0
             )
 
             if should_update_checkpoint:

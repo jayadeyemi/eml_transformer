@@ -108,11 +108,18 @@ class BackfillPipeline:
                 return results
 
         if seed_checkpoint and results:
-            final_end = windows[-1][1]
+            # Seed to the day AFTER the final window's end date so that the
+            # next regular incremental run starts from the day following the
+            # backfill range, not from the last backfilled day itself.
+            # This prevents re-fetching the boundary day; any records on that
+            # day were already ingested and deduped by hash, but double-fetching
+            # wastes API quota and adds noise to run logs.
+            final_end_date = date.fromisoformat(windows[-1][1])
+            next_day = (final_end_date + timedelta(days=1)).isoformat()
 
             self.ingestion_pipeline.initialize_checkpoint(
                 source_name=source_name,
-                checkpoint_value=final_end,
+                checkpoint_value=next_day,
                 run_id="backfill_seed",
             )
 

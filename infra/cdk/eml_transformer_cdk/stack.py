@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from aws_cdk import Aws, CfnOutput, Duration, RemovalPolicy, Stack, Tags
@@ -8,12 +9,15 @@ from aws_cdk import aws_batch as batch
 from aws_cdk import aws_budgets as budgets
 from aws_cdk import aws_ce as ce
 from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cloudwatch_actions
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_scheduler as scheduler
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_sqs as sqs
 from constructs import Construct
@@ -54,16 +58,19 @@ class EmlTransformerCollectionStack(Stack):
 
         self._tag_stack()
 
+        notification_topic = self._create_notification_topic()
         data_lake = self._create_data_lake()
         url_fetch_dlq, url_fetch_queue = self._create_queues()
         url_state, run_state, domain_throttle = self._create_state_tables()
         repository = self._create_ecr_repository()
         log_group = self._create_log_group()
+        runtime_secret_arns = self._runtime_secret_arns()
         execution_role, task_role = self._create_batch_roles(
             data_lake=data_lake,
             url_fetch_queue=url_fetch_queue,
             url_fetch_dlq=url_fetch_dlq,
             tables=[url_state, run_state, domain_throttle],
+            runtime_secret_arns=runtime_secret_arns,
         )
         self._create_restore_roles(data_lake)
         compute_environment, job_queue = self._create_batch_compute()
@@ -75,6 +82,7 @@ class EmlTransformerCollectionStack(Stack):
             run_state=run_state,
             domain_throttle=domain_throttle,
             job_queue=job_queue,
+            notification_topic=notification_topic,
         )
         job_definitions = self._create_job_definitions(
             image=(
@@ -86,11 +94,29 @@ class EmlTransformerCollectionStack(Stack):
             log_group=log_group,
             runtime_environment=runtime_environment,
         )
-        gdelt_state_machine = self._create_gdelt_state_machine(job_queue, job_definitions)
-        source_workflow = self._create_source_workflow(job_queue, job_definitions)
-        backfill_workflow = self._create_backfill_workflow(job_queue, job_definitions)
+        gdelt_state_machine = self._create_gdelt_state_machine(
+            job_queue,
+            job_definitions,
+            notification_topic,
+        )
+        source_workflow = self._create_source_workflow(
+            job_queue,
+            job_definitions,
+            notification_topic,
+        )
+        backfill_workflow = self._create_backfill_workflow(
+            job_queue,
+            job_definitions,
+            notification_topic,
+        )
         self._create_scheduler(gdelt_state_machine, source_workflow)
-        self._create_alarms(url_fetch_dlq, gdelt_state_machine, source_workflow, backfill_workflow)
+        self._create_alarms(
+            url_fetch_dlq,
+            gdelt_state_machine,
+            source_workflow,
+            backfill_workflow,
+            notification_topic,
+        )
         self._create_cost_controls()
         self._create_outputs(
             data_lake=data_lake,
@@ -106,6 +132,7 @@ class EmlTransformerCollectionStack(Stack):
             source_workflow=source_workflow,
             backfill_workflow=backfill_workflow,
             runtime_environment=runtime_environment,
+            notification_topic=notification_topic,
         )
 
     def _tag_stack(self) -> None:
@@ -115,12 +142,68 @@ class EmlTransformerCollectionStack(Stack):
             "infra_engine": "cdk",
             "infra_stack": self.stack_name_prefix,
             "cdk_stack": self.stack_name_prefix,
-            "terraform_stack": self.stack_name_prefix,
             "service_family": "collection",
         }
 
         for key, value in tags.items():
             Tags.of(self).add(key, str(value))
+
+    def _create_notification_topic(self) -> sns.Topic | None:
+        sns_cfg = self.cfg.get("notifications", {}).get("sns", {})
+
+        if not sns_cfg.get("enabled", False):
+            return None
+
+        topic = sns.Topic(
+            self,
+            "NotificationTopic",
+            topic_name=sns_cfg.get(
+                "topic_name",
+                f"{self.stack_name_prefix}-notifications",
+            ),
+        )
+
+        for email in sns_cfg.get("email_recipients", []):
+            topic.add_subscription(sns_subscriptions.EmailSubscription(email))
+
+        return topic
+
+    def _runtime_secret_arns(self) -> list[str]:
+        secret_arns: list[str] = []
+
+        for secret_name, secret_cfg in self.cfg.get("runtime_secrets", {}).items():
+            secret_arn_env = secret_cfg.get("secret_arn_env")
+            secret_arn = os.getenv(secret_arn_env or "") or secret_cfg.get("secret_arn")
+
+            if not secret_arn:
+                raise ValueError(
+                    f"runtime_secrets.{secret_name} requires {secret_arn_env} "
+                    "to be set to a Secrets Manager secret ARN before CDK synth/deploy."
+                )
+
+            secret_arns.append(secret_arn)
+
+        return sorted(set(secret_arns))
+
+    def _runtime_secrets_for_service(self, service: str) -> list[dict[str, str]]:
+        secrets: list[dict[str, str]] = []
+
+        for secret_name, secret_cfg in self.cfg.get("runtime_secrets", {}).items():
+            if service not in secret_cfg.get("services", []):
+                continue
+
+            secret_arn_env = secret_cfg.get("secret_arn_env")
+            secret_arn = os.getenv(secret_arn_env or "") or secret_cfg.get("secret_arn")
+
+            if not secret_arn:
+                raise ValueError(
+                    f"runtime_secrets.{secret_name} requires {secret_arn_env} "
+                    "to be set to a Secrets Manager secret ARN before CDK synth/deploy."
+                )
+
+            secrets.append({"name": secret_name, "valueFrom": secret_arn})
+
+        return secrets
 
     def _create_data_lake(self) -> s3.Bucket:
         lifecycle = self.storage_cfg.get("lifecycle", {})
@@ -263,6 +346,7 @@ class EmlTransformerCollectionStack(Stack):
         url_fetch_queue: sqs.Queue,
         url_fetch_dlq: sqs.Queue,
         tables: list[dynamodb.Table],
+        runtime_secret_arns: list[str],
     ) -> tuple[iam.Role, iam.Role]:
         execution_role = iam.Role(
             self,
@@ -295,6 +379,16 @@ class EmlTransformerCollectionStack(Stack):
                 resources=["*"],
             )
         )
+        if runtime_secret_arns:
+            execution_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=[
+                        "secretsmanager:DescribeSecret",
+                        "secretsmanager:GetSecretValue",
+                    ],
+                    resources=runtime_secret_arns,
+                )
+            )
         return execution_role, task_role
 
     def _create_restore_roles(self, data_lake: s3.Bucket) -> None:
@@ -381,13 +475,22 @@ class EmlTransformerCollectionStack(Stack):
         run_state: dynamodb.Table,
         domain_throttle: dynamodb.Table,
         job_queue: batch.CfnJobQueue,
+        notification_topic: sns.Topic | None,
     ) -> dict[str, str]:
         env = build_runtime_environment(self.cfg)
+        for key in [
+            "STATE_MACHINE_ARN",
+            "SOURCE_WORKFLOW_ARN",
+            "BACKFILL_WORKFLOW_ARN",
+        ]:
+            env.pop(key, None)
+        for key in list(env):
+            if key.startswith("BATCH_JOB_DEFINITION_"):
+                env.pop(key, None)
         env.update(
             {
                 "DATA_BUCKET": data_lake.bucket_name,
                 "URL_FETCH_QUEUE_URL": url_fetch_queue.queue_url,
-                "ARTICLE_URL_QUEUE_URL": url_fetch_queue.queue_url,
                 "ARTICLE_URL_DLQ_URL": url_fetch_dlq.queue_url,
                 "URL_STATE_TABLE": url_state.table_name,
                 "RUN_STATE_TABLE": run_state.table_name,
@@ -395,6 +498,8 @@ class EmlTransformerCollectionStack(Stack):
                 "BATCH_JOB_QUEUE": job_queue.ref,
             }
         )
+        if notification_topic:
+            env["SNS_TOPIC_ARN"] = notification_topic.topic_arn
         return env
 
     def _create_job_definitions(
@@ -411,6 +516,46 @@ class EmlTransformerCollectionStack(Stack):
             service_cfg = self.services.get(service, {})
             compute = service_cfg.get("compute", {})
             timeout_seconds = int(compute.get("timeout_seconds", 3600))
+            container_properties = {
+                "image": image,
+                "executionRoleArn": execution_role.role_arn,
+                "jobRoleArn": task_role.role_arn,
+                "command": self._service_command(service, service_cfg),
+                "environment": [
+                    {"name": key, "value": value}
+                    for key, value in sorted(runtime_environment.items())
+                ],
+                "fargatePlatformConfiguration": {
+                    "platformVersion": "LATEST"
+                },
+                "networkConfiguration": {
+                    "assignPublicIp": (
+                        "ENABLED"
+                        if self.cfg.get("network", {}).get("assign_public_ip", True)
+                        else "DISABLED"
+                    )
+                },
+                "resourceRequirements": [
+                    {"type": "VCPU", "value": str(compute.get("vcpu", 1))},
+                    {
+                        "type": "MEMORY",
+                        "value": str(compute.get("memory_mib", 2048)),
+                    },
+                ],
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group": log_group.log_group_name,
+                        "awslogs-region": self.region_name,
+                        "awslogs-stream-prefix": service.replace("_", "-"),
+                    },
+                },
+            }
+            runtime_secrets = self._runtime_secrets_for_service(service)
+
+            if runtime_secrets:
+                container_properties["secrets"] = runtime_secrets
+
             job_definitions[service] = batch.CfnJobDefinition(
                 self,
                 f"{_pascal(service)}JobDefinition",
@@ -425,41 +570,7 @@ class EmlTransformerCollectionStack(Stack):
                 retry_strategy=batch.CfnJobDefinition.RetryStrategyProperty(
                     attempts=int(service_cfg.get("retry_attempts", 1)),
                 ),
-                container_properties={
-                    "image": image,
-                    "executionRoleArn": execution_role.role_arn,
-                    "jobRoleArn": task_role.role_arn,
-                    "command": self._service_command(service, service_cfg),
-                    "environment": [
-                        {"name": key, "value": value}
-                        for key, value in sorted(runtime_environment.items())
-                    ],
-                    "fargatePlatformConfiguration": {
-                        "platformVersion": "LATEST"
-                    },
-                    "networkConfiguration": {
-                        "assignPublicIp": (
-                            "ENABLED"
-                            if self.cfg.get("network", {}).get("assign_public_ip", True)
-                            else "DISABLED"
-                        )
-                    },
-                    "resourceRequirements": [
-                        {"type": "VCPU", "value": str(compute.get("vcpu", 1))},
-                        {
-                            "type": "MEMORY",
-                            "value": str(compute.get("memory_mib", 2048)),
-                        },
-                    ],
-                    "logConfiguration": {
-                        "logDriver": "awslogs",
-                        "options": {
-                            "awslogs-group": log_group.log_group_name,
-                            "awslogs-region": self.region_name,
-                            "awslogs-stream-prefix": service.replace("_", "-"),
-                        },
-                    },
-                },
+                container_properties=container_properties,
             )
 
         return job_definitions
@@ -495,7 +606,7 @@ class EmlTransformerCollectionStack(Stack):
             return command
 
         if service == "backfill":
-            return [
+            command = [
                 "service-run",
                 "--service",
                 "backfill",
@@ -562,6 +673,7 @@ class EmlTransformerCollectionStack(Stack):
         role_name: str,
         job_queue: batch.CfnJobQueue,
         job_definitions: dict[str, batch.CfnJobDefinition],
+        notification_topic: sns.Topic | None = None,
     ) -> iam.Role:
         """Create a Step Functions execution role with Batch permissions."""
         batch_submit_resources = [
@@ -572,6 +684,33 @@ class EmlTransformerCollectionStack(Stack):
             f"arn:{Aws.PARTITION}:events:{Aws.REGION}:"
             f"{Aws.ACCOUNT_ID}:rule/StepFunctionsGetEventsForBatchJobsRule"
         )
+        statements = [
+            iam.PolicyStatement(
+                actions=["batch:SubmitJob"],
+                resources=batch_submit_resources,
+            ),
+            iam.PolicyStatement(
+                actions=["batch:DescribeJobs", "batch:TerminateJob"],
+                resources=["*"],
+            ),
+            iam.PolicyStatement(
+                actions=[
+                    "events:PutTargets",
+                    "events:PutRule",
+                    "events:DescribeRule",
+                ],
+                resources=[step_functions_batch_rule],
+            ),
+        ]
+
+        if notification_topic:
+            statements.append(
+                iam.PolicyStatement(
+                    actions=["sns:Publish"],
+                    resources=[notification_topic.topic_arn],
+                )
+            )
+
         return iam.Role(
             self,
             logical_id,
@@ -579,32 +718,87 @@ class EmlTransformerCollectionStack(Stack):
             assumed_by=iam.ServicePrincipal("states.amazonaws.com"),
             inline_policies={
                 "StepFunctionsBatchIntegration": iam.PolicyDocument(
-                    statements=[
-                        iam.PolicyStatement(
-                            actions=["batch:SubmitJob"],
-                            resources=batch_submit_resources,
-                        ),
-                        iam.PolicyStatement(
-                            actions=["batch:DescribeJobs", "batch:TerminateJob"],
-                            resources=["*"],
-                        ),
-                        iam.PolicyStatement(
-                            actions=[
-                                "events:PutTargets",
-                                "events:PutRule",
-                                "events:DescribeRule",
-                            ],
-                            resources=[step_functions_batch_rule],
-                        ),
-                    ]
+                    statements=statements
                 )
             },
         )
+
+    def _notify_state(
+        self,
+        notification_topic: sns.Topic,
+        workflow: str,
+        status: str,
+        *,
+        next_state: str | None = None,
+        end: bool = False,
+    ) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+                "TopicArn": notification_topic.topic_arn,
+                "Subject": f"{self.stack_name_prefix} {workflow} {status}",
+                "Message.$": (
+                    "States.Format("
+                    "'stack={} workflow={} status={} execution={} input={}', "
+                    f"'{self.stack_name_prefix}', "
+                    f"'{workflow}', "
+                    f"'{status}', "
+                    "$$.Execution.Id, "
+                    "States.JsonToString($$.Execution.Input)"
+                    ")"
+                ),
+            },
+            "ResultPath": "$.notification",
+        }
+
+        if end:
+            state["End"] = True
+        elif next_state:
+            state["Next"] = next_state
+
+        return state
+
+    def _failure_catch(self) -> list[dict[str, str]]:
+        return [
+            {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "NotifyFailure",
+            }
+        ]
+
+    def _notification_terminal_states(
+        self,
+        notification_topic: sns.Topic,
+        workflow: str,
+        success_subject: str = "completed",
+    ) -> dict[str, Any]:
+        return {
+            "NotifySuccess": self._notify_state(
+                notification_topic,
+                workflow,
+                success_subject,
+                end=True,
+            ),
+            "NotifyFailure": self._notify_state(
+                notification_topic,
+                workflow,
+                "failed",
+                next_state="WorkflowFailed",
+            ),
+            "WorkflowFailed": {
+                "Type": "Fail",
+                "Error": f"{workflow}Failed",
+                "Cause": f"{workflow} workflow failed; notification was published.",
+            },
+        }
 
     def _create_gdelt_state_machine(
         self,
         job_queue: batch.CfnJobQueue,
         job_definitions: dict[str, batch.CfnJobDefinition],
+        notification_topic: sns.Topic | None,
     ) -> sfn.CfnStateMachine:
         """High-volume GDELT acquisition workflow: discover → parallel URL fetch workers."""
         role = self._sfn_role(
@@ -612,6 +806,7 @@ class EmlTransformerCollectionStack(Stack):
             f"{self.stack_name_prefix}-gdelt-step-functions",
             job_queue,
             job_definitions,
+            notification_topic,
         )
         url_fetch_cfg = self.services.get("url_fetch_worker", {})
         parallelism = int(
@@ -626,6 +821,7 @@ class EmlTransformerCollectionStack(Stack):
                 "JobQueue": job_queue.ref,
                 "JobDefinition": job_definitions["url_fetch_worker"].ref,
             },
+            "ResultPath": "$.fetch_result",
             "Retry": [
                 {
                     "ErrorEquals": ["States.TaskFailed"],
@@ -637,7 +833,12 @@ class EmlTransformerCollectionStack(Stack):
         }
 
         if parallelism <= 1:
-            fetch_state: dict[str, Any] = {**fetch_task, "End": True}
+            fetch_state: dict[str, Any] = dict(fetch_task)
+            if notification_topic:
+                fetch_state["Next"] = "NotifySuccess"
+                fetch_state["Catch"] = self._failure_catch()
+            else:
+                fetch_state["End"] = True
             fetch_state_name = "FetchUrls"
             fetch_states = {fetch_state_name: fetch_state}
         else:
@@ -661,13 +862,17 @@ class EmlTransformerCollectionStack(Stack):
                 for i in range(parallelism)
             ]
             fetch_state_name = "FetchUrlsParallel"
-            fetch_states = {
-                fetch_state_name: {
-                    "Type": "Parallel",
-                    "Branches": branches,
-                    "End": True,
-                }
+            parallel_state: dict[str, Any] = {
+                "Type": "Parallel",
+                "Branches": branches,
+                "ResultPath": "$.fetch_results",
             }
+            if notification_topic:
+                parallel_state["Next"] = "NotifySuccess"
+                parallel_state["Catch"] = self._failure_catch()
+            else:
+                parallel_state["End"] = True
+            fetch_states = {fetch_state_name: parallel_state}
 
         definition = {
             "Comment": "High-volume GDELT URL acquisition workflow",
@@ -692,11 +897,20 @@ class EmlTransformerCollectionStack(Stack):
                             "BackoffRate": 2,
                         }
                     ],
+                    "ResultPath": "$.discovery_result",
                     "Next": fetch_state_name,
                 },
                 **fetch_states,
             },
         }
+        if notification_topic:
+            definition["States"]["DiscoverGdeltUrls"]["Catch"] = self._failure_catch()
+            definition["States"].update(
+                self._notification_terminal_states(
+                    notification_topic,
+                    "GDELT acquisition",
+                )
+            )
         return sfn.CfnStateMachine(
             self,
             "GdeltAcquisitionStateMachine",
@@ -709,6 +923,7 @@ class EmlTransformerCollectionStack(Stack):
         self,
         job_queue: batch.CfnJobQueue,
         job_definitions: dict[str, batch.CfnJobDefinition],
+        notification_topic: sns.Topic | None,
     ) -> sfn.CfnStateMachine:
         """Generic source ingest → standardize workflow for non-GDELT sources."""
         role = self._sfn_role(
@@ -716,6 +931,7 @@ class EmlTransformerCollectionStack(Stack):
             f"{self.stack_name_prefix}-source-workflow",
             job_queue,
             job_definitions,
+            notification_topic,
         )
         retry = [
             {
@@ -743,6 +959,7 @@ class EmlTransformerCollectionStack(Stack):
                         },
                     },
                     "Retry": retry,
+                    "ResultPath": "$.ingest_result",
                     "Next": "StandardizeSource",
                 },
                 "StandardizeSource": {
@@ -759,10 +976,22 @@ class EmlTransformerCollectionStack(Stack):
                         },
                     },
                     "Retry": retry,
-                    "End": True,
+                    "ResultPath": "$.standardize_result",
                 },
             },
         }
+        if notification_topic:
+            definition["States"]["IngestSource"]["Catch"] = self._failure_catch()
+            definition["States"]["StandardizeSource"]["Catch"] = self._failure_catch()
+            definition["States"]["StandardizeSource"]["Next"] = "NotifySuccess"
+            definition["States"].update(
+                self._notification_terminal_states(
+                    notification_topic,
+                    "source workflow",
+                )
+            )
+        else:
+            definition["States"]["StandardizeSource"]["End"] = True
         return sfn.CfnStateMachine(
             self,
             "SourceWorkflowStateMachine",
@@ -775,6 +1004,7 @@ class EmlTransformerCollectionStack(Stack):
         self,
         job_queue: batch.CfnJobQueue,
         job_definitions: dict[str, batch.CfnJobDefinition],
+        notification_topic: sns.Topic | None,
     ) -> sfn.CfnStateMachine:
         """Parameterized backfill workflow: source + start_date + end_date + window_days."""
         role = self._sfn_role(
@@ -782,6 +1012,7 @@ class EmlTransformerCollectionStack(Stack):
             f"{self.stack_name_prefix}-backfill-workflow",
             job_queue,
             job_definitions,
+            notification_topic,
         )
         base_command = (
             "States.Array('service-run', '--service', 'backfill', '--source', "
@@ -816,7 +1047,7 @@ class EmlTransformerCollectionStack(Stack):
                     "BackoffRate": 1,
                 }
             ],
-            "End": True,
+            "ResultPath": "$.backfill_result",
         }
         checkpoint_task = {
             **base_task,
@@ -846,6 +1077,25 @@ class EmlTransformerCollectionStack(Stack):
                 "RunBackfillAndSeedCheckpoint": checkpoint_task,
             },
         }
+        if notification_topic:
+            definition["States"]["RunBackfill"]["Catch"] = self._failure_catch()
+            definition["States"]["RunBackfill"]["Next"] = "NotifySuccess"
+            definition["States"]["RunBackfillAndSeedCheckpoint"]["Catch"] = (
+                self._failure_catch()
+            )
+            definition["States"]["RunBackfillAndSeedCheckpoint"]["Next"] = (
+                "NotifySuccess"
+            )
+            definition["States"].update(
+                self._notification_terminal_states(
+                    notification_topic,
+                    "backfill",
+                    "completed",
+                )
+            )
+        else:
+            definition["States"]["RunBackfill"]["End"] = True
+            definition["States"]["RunBackfillAndSeedCheckpoint"]["End"] = True
         return sfn.CfnStateMachine(
             self,
             "BackfillWorkflowStateMachine",
@@ -898,53 +1148,40 @@ class EmlTransformerCollectionStack(Stack):
                 ),
             )
 
-        # Generic source workflow schedules (ingest / standardize services)
-        source_schedule_role: iam.Role | None = None
-        scheduled_sources: list[str] = []
+        # Generic source workflow schedule: one scheduled execution runs
+        # ingest -> standardize for the configured source selector.
+        source_service = self.services.get("ingest", {})
+        source_schedule = source_service.get("schedule", {})
 
-        for service_name in ("ingest", "standardize"):
-            service_cfg = self.services.get(service_name, {})
-            sched = service_cfg.get("schedule", {})
-
-            if not sched.get("enabled", False):
-                continue
-
-            if source_schedule_role is None:
-                source_schedule_role = iam.Role(
-                    self,
-                    "SourceSchedulerRole",
-                    role_name=f"{self.stack_name_prefix}-source-scheduler",
-                    assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"),
+        if source_schedule.get("enabled", False):
+            source_schedule_role = iam.Role(
+                self,
+                "SourceSchedulerRole",
+                role_name=f"{self.stack_name_prefix}-source-scheduler",
+                assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"),
+            )
+            source_schedule_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["states:StartExecution"],
+                    resources=[source_workflow.attr_arn],
                 )
-                source_schedule_role.add_to_policy(
-                    iam.PolicyStatement(
-                        actions=["states:StartExecution"],
-                        resources=[source_workflow.attr_arn],
-                    )
-                )
-
-            source = service_cfg.get("source", "all")
-            schedule_id = f"{service_name.capitalize()}{source.capitalize()}Schedule"
-
-            if schedule_id in scheduled_sources:
-                continue
-
-            scheduled_sources.append(schedule_id)
+            )
+            source = source_service.get("source", "all")
             scheduler.CfnSchedule(
                 self,
-                schedule_id,
-                name=f"{self.stack_name_prefix}-{service_name}-{source}",
-                schedule_expression=sched.get("expression", "rate(1 day)"),
+                "SourceWorkflowSchedule",
+                name=f"{self.stack_name_prefix}-source-workflow-{source}",
+                schedule_expression=source_schedule.get("expression", "rate(1 day)"),
                 state="ENABLED",
                 flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                     mode="OFF",
                 ),
                 target=scheduler.CfnSchedule.TargetProperty(
                     arn=source_workflow.attr_arn,
-                    role_arn=source_schedule_role.role_arn,  # type: ignore[union-attr]
+                    role_arn=source_schedule_role.role_arn,
                     input=json.dumps(
                         {
-                            "service": service_name,
+                            "service": "source_workflow",
                             "parameters": {"source": source},
                         }
                     ),
@@ -957,9 +1194,10 @@ class EmlTransformerCollectionStack(Stack):
         gdelt_state_machine: sfn.CfnStateMachine,
         source_workflow: sfn.CfnStateMachine,
         backfill_workflow: sfn.CfnStateMachine,
+        notification_topic: sns.Topic | None,
     ) -> None:
         # SQS DLQ depth alarm
-        cloudwatch.Alarm(
+        dlq_alarm = cloudwatch.Alarm(
             self,
             "UrlFetchDlqVisibleAlarm",
             alarm_name=f"{self.stack_name_prefix}-url-fetch-dlq-visible",
@@ -972,9 +1210,10 @@ class EmlTransformerCollectionStack(Stack):
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             alarm_description="URL fetch messages reached the DLQ.",
         )
+        self._add_alarm_action(dlq_alarm, notification_topic)
 
         # Batch job failure alarm
-        cloudwatch.Alarm(
+        batch_alarm = cloudwatch.Alarm(
             self,
             "BatchJobFailureAlarm",
             alarm_name=f"{self.stack_name_prefix}-batch-job-failures",
@@ -992,6 +1231,7 @@ class EmlTransformerCollectionStack(Stack):
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             alarm_description="One or more Batch jobs failed in the collection queue.",
         )
+        self._add_alarm_action(batch_alarm, notification_topic)
 
         # Step Functions execution failure alarms
         for sfn_machine, alarm_id, alarm_suffix in (
@@ -999,7 +1239,7 @@ class EmlTransformerCollectionStack(Stack):
             (source_workflow, "SourceWorkflowFailureAlarm", "source-workflow-failures"),
             (backfill_workflow, "BackfillWorkflowFailureAlarm", "backfill-workflow-failures"),
         ):
-            cloudwatch.Alarm(
+            alarm = cloudwatch.Alarm(
                 self,
                 alarm_id,
                 alarm_name=f"{self.stack_name_prefix}-{alarm_suffix}",
@@ -1017,6 +1257,15 @@ class EmlTransformerCollectionStack(Stack):
                 comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
                 alarm_description=f"Step Functions executions failed for {alarm_suffix}.",
             )
+            self._add_alarm_action(alarm, notification_topic)
+
+    def _add_alarm_action(
+        self,
+        alarm: cloudwatch.Alarm,
+        notification_topic: sns.Topic | None,
+    ) -> None:
+        if notification_topic:
+            alarm.add_alarm_action(cloudwatch_actions.SnsAction(notification_topic))
 
     def _create_cost_controls(self) -> None:
         emails = self.cost.get("alert_emails", [])
@@ -1101,6 +1350,7 @@ class EmlTransformerCollectionStack(Stack):
         source_workflow: sfn.CfnStateMachine,
         backfill_workflow: sfn.CfnStateMachine,
         runtime_environment: dict[str, str],
+        notification_topic: sns.Topic | None,
     ) -> None:
         outputs = {
             "DataBucketName": data_lake.bucket_name,
@@ -1135,6 +1385,8 @@ class EmlTransformerCollectionStack(Stack):
                 }
             ),
         }
+        if notification_topic:
+            outputs["SnsTopicArn"] = notification_topic.topic_arn
 
         for service, job_definition in job_definitions.items():
             outputs[f"{_pascal(service)}JobDefinition"] = job_definition.ref

@@ -27,7 +27,7 @@ class NewsAPISource(TextSource):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None,
         query: str,
         language: str = "en",
         sort_by: str = "relevancy",
@@ -62,6 +62,8 @@ class NewsAPISource(TextSource):
         """
         Fetch one page from NewsAPI.
         """
+        if not self.api_key:
+            raise EnvironmentError("Missing required environment variable: NEWSAPI_KEY")
 
         params = {
             "q": self.query,

@@ -314,14 +314,12 @@ External APIs
 +----------------+
 ```
 
-## AWS CDK Option with Terraform Compatibility
+## AWS CDK Deployment Option
 
 The AWS option separates durable infrastructure ownership from runtime collection behavior.
-AWS CDK in Python is the primary deployment path. Terraform is retained as a
-secondary compatibility/reference path and should not manage the same deployed
-environment as CDK unless resources are intentionally migrated.
+AWS CDK in Python is the deployment path.
 
-- **CDK owns durable AWS resources**: S3 buckets, SQS queues, DynamoDB tables, IAM roles, ECR repositories, AWS Batch job definitions, Step Functions workflows, EventBridge schedules, CloudWatch alarms, cost controls, and optional AWS Budgets alerts.
+- **CDK owns durable AWS resources**: S3 buckets, SQS queues, DynamoDB tables, IAM roles, ECR repositories, AWS Batch job definitions, Step Functions workflows, EventBridge schedules, SNS notification topics, CloudWatch alarms, cost controls, and optional AWS Budgets alerts.
 - **Python AWS SDK runtime code uses existing resources**: it writes S3 objects, sends SQS messages, updates DynamoDB state, emits CloudWatch metrics, and starts Step Functions or Batch jobs.
 - **The SDK must not create durable infrastructure** such as buckets, queues, tables, IAM roles, schedules, or state machines.
 
@@ -363,6 +361,7 @@ CloudFormation             Amazon ECR
 |                                                                    |
 |  S3 data lake: bronze / silver / gold / manifests                   |
 |  DynamoDB: run state / URL state / domain throttle                  |
+|  SNS: workflow completion/failure messages and alarm actions        |
 |  CloudWatch: logs / metrics / alarms                               |
 |  IAM: execution roles and least-privilege access                    |
 +--------------------------------------------------------------------+
@@ -405,11 +404,9 @@ eml_transformer deployment-matrix --deployment configs/deployments/aws-dev.yaml
 eml_transformer config-render --deployment configs/deployments/aws-dev.yaml --output configs/generated/aws-dev.runtime.yaml
 ```
 
-`configs/aws.example.yaml` intentionally contains fake `123456789012`
-account/resource values for public documentation only. Real generated runtime
-configs under `configs/generated/*.yaml` should not be committed; use CDK
-outputs, environment variables, CI secrets, or ignored generated YAML for real
-ARNs.
+Real generated runtime configs under `configs/generated/*.yaml` should not be
+committed; use CDK outputs, environment variables, CI secrets, or ignored
+generated YAML for real ARNs.
 
 ### AWS Security Defaults
 
@@ -419,8 +416,8 @@ ARNs.
   not public invocation policies.
 - Runtime containers receive temporary permissions through IAM roles, not
   long-lived AWS keys.
-- CDK and Terraform must not manage the same live environment unless resources
-  have been explicitly migrated/imported.
+- Runtime secrets are injected into Batch from Secrets Manager ARNs; plaintext
+  source API keys are not stored in deployment YAML or generated runtime YAML.
 
 ### AWS Acquisition Flow
 
@@ -544,7 +541,7 @@ testing or injected as environment variables in AWS Batch:
 DATA_BUCKET
 STORAGE_PREFIX
 URL_FETCH_QUEUE_URL
-ARTICLE_URL_QUEUE_URL
+ARTICLE_URL_DLQ_URL
 URL_STATE_TABLE
 RUN_STATE_TABLE
 DOMAIN_THROTTLE_TABLE
@@ -553,7 +550,6 @@ SOURCE_WORKFLOW_ARN
 BACKFILL_WORKFLOW_ARN
 BATCH_JOB_QUEUE
 GDELT_MAX_URLS_PER_RUN
-BATCH_JOB_DEFINITION
 BATCH_JOB_DEFINITION_INGEST
 BATCH_JOB_DEFINITION_STANDARDIZE
 BATCH_JOB_DEFINITION_EMBED
@@ -562,10 +558,10 @@ BATCH_JOB_DEFINITION_RUN_ALL
 BATCH_JOB_DEFINITION_GDELT_DISCOVERY
 BATCH_JOB_DEFINITION_URL_FETCH_WORKER
 BATCH_JOB_DEFINITION_S3_RESTORE_OPERATOR
+SNS_TOPIC_ARN
 AWS_REGION
 INFRA_STACK
 CDK_STACK
-TERRAFORM_STACK
 ```
 
 ### Operational Defaults
@@ -580,4 +576,7 @@ TERRAFORM_STACK
 - Failed fetches remain retryable and move to the dead-letter queue according to the infrastructure SQS redrive policy.
 - Run-state records use `run_id` and `job_type` so multi-step workflows do not overwrite their own state.
 - CloudWatch metrics are best effort and should not fail ingestion.
-- Dev schedules are disabled by default; prod may enable hourly GDELT acquisition through the deployment YAML.
+- Dev schedules are disabled by default; the smoke deployment uses accelerated
+  schedules during the full AWS test and disables them after diagnostics.
+- SNS workflow notifications are emitted by Step Functions for GDELT
+  acquisition, generic source workflows, and backfill completion/failure.

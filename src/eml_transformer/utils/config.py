@@ -25,8 +25,8 @@ def apply_environment_overrides(cfg: dict[str, Any]) -> None:
     """
     Apply runtime overrides supplied by infrastructure/AWS Batch environments.
 
-    This keeps committed YAML portable while allowing CDK, Terraform, or other
-    deployment outputs to be injected into containers at runtime.
+    This keeps committed YAML portable while allowing CDK or other deployment
+    outputs to be injected into containers at runtime.
     """
 
     storage_cfg = cfg.setdefault("storage", {})
@@ -54,7 +54,6 @@ def apply_environment_overrides(cfg: dict[str, Any]) -> None:
         queue_cfg,
         "url_fetch_queue_url",
         "URL_FETCH_QUEUE_URL",
-        "ARTICLE_URL_QUEUE_URL",
     )
     _set_from_env(state_cfg, "url_table", "URL_STATE_TABLE")
     _set_from_env(state_cfg, "run_table", "RUN_STATE_TABLE")
@@ -64,7 +63,6 @@ def apply_environment_overrides(cfg: dict[str, Any]) -> None:
     _set_from_env(orchestration_cfg, "source_workflow_arn", "SOURCE_WORKFLOW_ARN")
     _set_from_env(orchestration_cfg, "backfill_workflow_arn", "BACKFILL_WORKFLOW_ARN")
     _set_from_env(orchestration_cfg, "batch_job_queue", "BATCH_JOB_QUEUE")
-    _set_from_env(orchestration_cfg, "batch_job_definition", "BATCH_JOB_DEFINITION")
 
     batch_job_definitions = orchestration_cfg.setdefault("batch_job_definitions", {})
     prefix = "BATCH_JOB_DEFINITION_"
@@ -109,11 +107,6 @@ def build_source_config(
     if api_key_env:
         api_key = os.getenv(api_key_env)
 
-        if not api_key:
-            raise EnvironmentError(
-                f"Missing required environment variable: {api_key_env}"
-            )
-
         source_cfg["api_key"] = api_key
 
     return source, source_cfg
@@ -122,7 +115,11 @@ def build_source_config(
 def build_source_configs(
     cfg: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
+    import eml_transformer.ingestion.sources  # noqa: F401
+    from eml_transformer.ingestion.registry import available_sources
+
     configs = {}
+    registered_sources = set(available_sources())
 
     for source_name, source_cfg in cfg.get(
         "sources",
@@ -133,6 +130,9 @@ def build_source_configs(
             "enabled",
             True,
         ):
+            continue
+
+        if source_name not in registered_sources and source_cfg.get("acquisition"):
             continue
 
         name, kwargs = build_source_config(

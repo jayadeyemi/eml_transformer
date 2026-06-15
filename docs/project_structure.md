@@ -144,12 +144,9 @@ The `infra/` folder contains infrastructure-as-code.
 ```text
 infra/
 +-- cdk/
-+-- terraform/
 ```
 
-CDK is the primary AWS deployment path. Terraform remains as a compatibility
-and reference implementation only; do not deploy both into the same environment
-unless resources are intentionally migrated.
+CDK is the AWS deployment path for collection infrastructure.
 
 ## `notebooks/`
 

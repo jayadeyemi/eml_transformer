@@ -4,15 +4,8 @@ AWS CDK in Python is the primary infrastructure path for AWS deployments. CDK
 reads the layered deployment YAML, creates durable AWS resources, and injects
 runtime values into Batch job definitions. Runtime Python code must not create
 durable infrastructure.
-
-Terraform remains under `infra/terraform/aws/` as a secondary compatibility and
-reference implementation. Do not deploy CDK and Terraform into the same
-environment unless resources have first been imported/migrated deliberately.
-
-`configs/aws.example.yaml` uses fake account/resource values and is safe as a
-public example only. Real deployments should use generated runtime YAML files
-under `configs/generated/`; those files stay out of git and are ignored by
-`.gitignore`.
+Real deployments use generated runtime YAML files under `configs/generated/`;
+those files stay out of git and are ignored by `.gitignore`.
 
 ## Validate And Render Config
 
@@ -68,4 +61,6 @@ mappings; it does not calculate a monthly cost estimate.
 
 For the shortest low-cost AWS test, deploy `configs/deployments/aws-smoke.yaml`,
 submit one capped `gdelt_discovery` job with `--max-files 1`, then destroy the
-smoke stack if you do not need the retained data resources.
+smoke stack if you do not need the retained data resources. The full smoke test
+uses `scripts/aws_test/run_all.sh --reset-stack`, SNS email notifications, and a
+Secrets Manager secret named by `NEWSAPI_SECRET_NAME`.

@@ -203,21 +203,32 @@ class LocalStorage(Storage):
         tmp.replace(path)
 
     def append_jsonl(self, key: str, rows: list[dict[str, Any]]) -> None:
+        """Append rows to a JSONL file atomically.
+
+        Reads the existing file (if any), appends new rows, then
+        writes atomically via a .tmp file + rename so a crash or
+        interrupt never leaves a partially-written file.
+        """
+        if not rows:
+            return
+
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        if path.exists() and path.stat().st_size > 0:
-            with path.open("rb+") as f:
-                f.seek(-1, 2)
-                last_char = f.read(1)
+        existing_lines: list[bytes] = []
+        if path.exists():
+            with path.open("rb") as f:
+                existing_lines = f.readlines()
 
-                if last_char != b"\n":
-                    f.write(b"\n")
-
-        with path.open("a", encoding="utf-8") as f:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for line in existing_lines:
+                decoded = line.decode("utf-8")
+                f.write(decoded if decoded.endswith("\n") else decoded + "\n")
             for row in rows:
-                f.write(json.dumps(row, ensure_ascii=False))
+                f.write(json.dumps(row, ensure_ascii=False, default=str))
                 f.write("\n")
+        tmp.replace(path)
 
     def read_jsonl(
         self,

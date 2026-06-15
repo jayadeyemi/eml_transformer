@@ -15,7 +15,7 @@ aws:
   cloudwatch_namespace: EMLTransformer/Collection
 
 queues:
-  # Filled from Terraform output or URL_FETCH_QUEUE_URL in AWS runs.
+  # Filled from infrastructure outputs or URL_FETCH_QUEUE_URL in AWS runs.
   url_fetch_queue_url: null
 
 state:
@@ -26,13 +26,11 @@ state:
 
 orchestration:
   # Use Step Functions for workflows; use Batch for individual microservices.
-  # batch_job_definition and collection_service are compatibility fallbacks.
-  # Prefer batch_job_definitions.<service> for all new deployments.
   state_machine_arn: null
+  source_workflow_arn: null
+  backfill_workflow_arn: null
   batch_job_queue: null
-  batch_job_definition: null
   batch_job_definitions:
-    collection_service: null
     ingest: null
     standardize: null
     embed: null

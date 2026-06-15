@@ -235,8 +235,7 @@ class AwsAcquisitionRuntime:
     def enqueue_urls(self, urls: list[dict[str, Any]]) -> int:
         if not self.config.url_fetch_queue_url:
             raise ValueError(
-                "Missing queues.url_fetch_queue_url, URL_FETCH_QUEUE_URL, "
-                "or ARTICLE_URL_QUEUE_URL"
+                "Missing queues.url_fetch_queue_url or URL_FETCH_QUEUE_URL"
             )
 
         queue_url = self.config.url_fetch_queue_url
@@ -284,8 +283,7 @@ class AwsAcquisitionRuntime:
     ) -> ArticleFetchResult:
         if not self.config.url_fetch_queue_url:
             raise ValueError(
-                "Missing queues.url_fetch_queue_url, URL_FETCH_QUEUE_URL, "
-                "or ARTICLE_URL_QUEUE_URL"
+                "Missing queues.url_fetch_queue_url or URL_FETCH_QUEUE_URL"
             )
 
         run_id = run_id or utc_run_id()
@@ -814,7 +812,7 @@ class AwsAcquisitionRuntime:
                 ],
             )
         except ImportError:
-            raise
+            return
         except Exception:
             return
 

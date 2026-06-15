@@ -86,6 +86,25 @@ def print_json_result(title: str, result: dict[str, Any]) -> None:
     typer.echo("=" * 100 + "\n")
 
 
+def _has_failed_result(value: Any) -> bool:
+    if value is None:
+        return False
+
+    if hasattr(value, "to_summary"):
+        return _has_failed_result(value.to_summary())
+
+    if isinstance(value, dict):
+        if str(value.get("status", "")).lower() == "failed":
+            return True
+
+        return any(_has_failed_result(child) for child in value.values())
+
+    if isinstance(value, (list, tuple)):
+        return any(_has_failed_result(child) for child in value)
+
+    return False
+
+
 def build_aws_runtime(
     config: str,
     aws_profile: str | None = None,
@@ -256,6 +275,11 @@ def config_render_from_outputs(
     profile: str | None = typer.Option(
         None, "--profile", help="AWS profile name for CloudFormation API calls."
     ),
+    deployment: str | None = typer.Option(
+        None,
+        "--deployment",
+        help="Optional deployment YAML whose source/path/model settings are merged into the runtime file.",
+    ),
 ):
     """Produce a runtime config YAML from an already-deployed CloudFormation stack."""
     import boto3 as _boto3
@@ -267,6 +291,14 @@ def config_render_from_outputs(
     rendered = render_runtime_config_from_cfn_outputs(
         stack_name=stack, region=region, _cfn_client=cfn_client
     )
+    layers: list[str] = []
+    if deployment:
+        loaded = load_deployment_config(deployment)
+        assert_valid_deployment_config(loaded.config)
+        rendered["paths"] = loaded.config.get("paths", {"root": "."})
+        rendered["sources"] = loaded.config.get("sources", {})
+        rendered["embeddings"] = loaded.config.get("embeddings", {})
+        layers = [str(layer) for layer in loaded.layers]
     write_yaml(Path(output), rendered)
     print_json_result(
         "Rendered Runtime Config From CDK Outputs",
@@ -274,6 +306,8 @@ def config_render_from_outputs(
             "stack": stack,
             "region": region,
             "output": str(Path(output).resolve()),
+            "deployment": deployment,
+            "layers": layers,
         },
     )
 
@@ -467,6 +501,9 @@ def service_run(
         init_checkpoint=init_checkpoint,
     )
     print_json_result("Collection Service", result)
+
+    if _has_failed_result(result):
+        raise typer.Exit(code=1)
 
 
 @app.command("gdelt-discover")
@@ -697,6 +734,22 @@ def verify_infra(
             results["sqs"] = {"status": "error", "queue_url": cfg.url_fetch_queue_url, "error": str(exc)}
     else:
         results["sqs"] = {"status": "skipped", "reason": "URL_FETCH_QUEUE_URL not configured"}
+
+    # SNS notifications
+    if cfg.sns_topic_arn:
+        try:
+            session.client("sns").get_topic_attributes(
+                TopicArn=cfg.sns_topic_arn,
+            )
+            results["sns"] = {"status": "ok", "topic_arn": cfg.sns_topic_arn}
+        except Exception as exc:
+            results["sns"] = {
+                "status": "error",
+                "topic_arn": cfg.sns_topic_arn,
+                "error": str(exc),
+            }
+    else:
+        results["sns"] = {"status": "skipped", "reason": "SNS_TOPIC_ARN not configured"}
 
     # DynamoDB
     dynamo = session.client("dynamodb")

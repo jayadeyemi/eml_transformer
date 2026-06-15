@@ -22,6 +22,7 @@ class AwsRuntimeConfig:
     backfill_workflow_arn: str | None = None
     batch_job_queue: str | None = None
     batch_job_definitions: dict[str, str] = field(default_factory=dict)
+    sns_topic_arn: str | None = None
     gdelt_max_urls_per_run: int | None = None
     cloudwatch_namespace: str = "EMLTransformer/Collection"
 
@@ -76,6 +77,7 @@ def load_aws_runtime_config(cfg: dict[str, Any]) -> AwsRuntimeConfig:
     queue_cfg = cfg.get("queues", {})
     state_cfg = cfg.get("state", {})
     orchestration_cfg = cfg.get("orchestration", {})
+    notification_cfg = cfg.get("notifications", {})
     gdelt_acquisition_cfg = (
         cfg.get("sources", {})
         .get("gdelt", {})
@@ -104,9 +106,7 @@ def load_aws_runtime_config(cfg: dict[str, Any]) -> AwsRuntimeConfig:
         aws_profile=_env_or_cfg("AWS_PROFILE", aws_cfg.get("profile")),
         url_fetch_queue_url=_env_or_cfg(
             "URL_FETCH_QUEUE_URL",
-            queue_cfg.get("url_fetch_queue_url")
-            or queue_cfg.get("article_url_queue_url"),
-            os.getenv("ARTICLE_URL_QUEUE_URL"),
+            queue_cfg.get("url_fetch_queue_url"),
         ),
         url_state_table=_env_or_cfg("URL_STATE_TABLE", state_cfg.get("url_table")),
         run_state_table=_env_or_cfg("RUN_STATE_TABLE", state_cfg.get("run_table")),
@@ -131,6 +131,10 @@ def load_aws_runtime_config(cfg: dict[str, Any]) -> AwsRuntimeConfig:
             orchestration_cfg.get("batch_job_queue"),
         ),
         batch_job_definitions=_load_batch_job_definitions(orchestration_cfg),
+        sns_topic_arn=_env_or_cfg(
+            "SNS_TOPIC_ARN",
+            notification_cfg.get("sns_topic_arn"),
+        ),
         gdelt_max_urls_per_run=_optional_int(
             _env_or_cfg(
                 "GDELT_MAX_URLS_PER_RUN",

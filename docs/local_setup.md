@@ -215,14 +215,13 @@ eml_transformer config-render-from-outputs \
     --stack eml-transformer-dev \
     --region us-east-1 \
     --profile eml-dev \
+    --deployment configs/deployments/aws-dev.yaml \
     --output configs/generated/aws-dev.runtime.yaml
 ```
 
-`config-render-from-outputs` renders live AWS resource values. It does not
-recreate the full source configuration by itself. For local smoke commands, the
-generated runtime file must also contain the normal `sources`, `paths`, and
-pipeline settings from the deployment config layers. Re-render or merge those
-settings before running `ingest`, `standardize`, `embed`, or `run-all` locally.
+`config-render-from-outputs` renders live AWS resource values. When
+`--deployment` is supplied, it also merges the deployment's `sources`, `paths`,
+and embedding settings so local smoke commands can run from the generated file.
 
 See `docs/aws_s3_layout.md` for the S3 folders that each command reads and
 writes.
@@ -282,6 +281,7 @@ CDK stack. To update any infrastructure setting:
    ```bash
    eml_transformer config-render-from-outputs \
        --stack eml-transformer-dev --profile eml-dev \
+       --deployment configs/deployments/aws-dev.yaml \
        --output configs/generated/aws-dev.runtime.yaml
    ```
 
@@ -402,6 +402,7 @@ cd ../..
 eml_transformer config-render-from-outputs \
     --stack eml-transformer-smoke \
     --profile eml-dev \
+    --deployment configs/deployments/aws-smoke.yaml \
     --output configs/generated/aws-smoke.runtime.yaml
 
 # 6 - build and push the image used by Batch
@@ -417,16 +418,20 @@ docker tag eml-transformer:smoke "$REPO_URL:smoke"
 docker push "$REPO_URL:smoke"
 
 # 7 - run the full smoke suite
-bash scripts/aws_test/run_all.sh --skip-phase0
+export NEWSAPI_SECRET_NAME=<operator-created-secrets-manager-secret-name>
+export CONFIRM_STACK_DELETE=eml-transformer-smoke
+bash scripts/aws_test/run_all.sh --reset-stack
 
-# 8 - tear down when done (data bucket and tables are RETAINED by design)
-cd infra/cdk
-cdk destroy -c deployment_config=configs/deployments/aws-smoke.yaml -c aws_profile=eml-dev
+# 8 - tear down retained smoke artifacts again when needed
+CONFIRM_STACK_DELETE=eml-transformer-smoke bash scripts/aws_test/reset_smoke_stack.sh
 ```
 
-The smoke suite writes logs under `scripts/aws_test/results/`. If `NEWSAPI_KEY`
-is not present, the NewsAPI source is skipped. The embedding smoke is currently
-best-effort unless the image includes the optional HPC/modeling dependencies.
+The smoke suite writes logs under `scripts/aws_test/results/`. AWS Batch reads
+`NEWSAPI_KEY` from the Secrets Manager secret named by `NEWSAPI_SECRET_NAME`.
+SNS sends workflow completion and failure messages to the configured email
+subscription after the recipient confirms the AWS subscription email. The
+embedding smoke is currently best-effort unless the image includes the optional
+HPC/modeling dependencies.
 
 ---
 

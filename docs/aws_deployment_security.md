@@ -1,10 +1,8 @@
 # AWS Deployment Security And Cost Notes
 
-`configs/aws.example.yaml` intentionally uses the fake account ID
-`123456789012` and fake ARNs. It is safe as a public example. Real generated
-runtime configs, CloudFormation outputs, and account/resource metadata should
-not be committed to a public repository. Do not use `configs/aws.example.yaml`
-as an operational deployment config.
+Generated runtime configs, CloudFormation outputs, and account/resource
+metadata should not be committed to a public repository. Runtime examples under
+`configs/generated_examples/` use fake account IDs and ARNs only.
 
 ## Runtime Values
 
@@ -29,25 +27,26 @@ Access is controlled through IAM roles and policies:
   policies.
 - S3 buckets use S3-managed encryption, versioning, and blocked public access.
 - SQS queues do not receive public queue policies.
+- SNS topics are private account resources; email subscribers must confirm the
+  AWS subscription email before messages are delivered.
 - Runtime Batch tasks use the task role created by infrastructure and should
   not receive long-lived AWS keys.
+- Source API keys for AWS Batch are injected from Secrets Manager by ARN. The
+  smoke deployment expects `NEWSAPI_SECRET_NAME` to identify an operator-created
+  secret whose value is the raw NewsAPI key.
 
 ## Short AWS Test
 
 For the lowest-cost AWS smoke test, use `configs/deployments/aws-smoke.yaml`.
-It creates a separate `eml-transformer-smoke` stack, keeps schedules disabled,
-caps Batch at 2 vCPUs, and configures GDELT for one file and five URL fetches.
+It creates a separate `eml-transformer-smoke` stack, caps Batch at 2 vCPUs,
+configures GDELT for one file and five URL fetches, and enables accelerated
+test schedules plus SNS notifications.
 
 ```bash
-eml_transformer config-validate --deployment configs/deployments/aws-smoke.yaml
-eml_transformer deployment-matrix --deployment configs/deployments/aws-smoke.yaml
-eml_transformer config-render \
-  --deployment configs/deployments/aws-smoke.yaml \
-  --output configs/generated/aws-smoke.runtime.yaml
-cd infra/cdk
-cdk synth -c deployment_config=configs/deployments/aws-smoke.yaml
-cdk diff -c deployment_config=configs/deployments/aws-smoke.yaml
-cdk deploy -c deployment_config=configs/deployments/aws-smoke.yaml
+export AWS_PROFILE=episb
+export NEWSAPI_SECRET_NAME=<operator-created-secret-name>
+export CONFIRM_STACK_DELETE=eml-transformer-smoke
+bash scripts/aws_test/run_all.sh --reset-stack
 ```
 
 The dev config keeps schedules disabled, avoids NAT Gateway creation, disables
@@ -66,13 +65,14 @@ eml_transformer aws-start-service \
   --max-files 1
 ```
 
-After testing, stop schedules if any were enabled and destroy the dev stack if
-you do not need retained resources:
+The full smoke runner disables accelerated schedules after diagnostics. To
+destroy the stack and delete retained artifacts again:
 
 ```bash
-cd infra/cdk
-cdk destroy -c deployment_config=configs/deployments/aws-smoke.yaml
+CONFIRM_STACK_DELETE=eml-transformer-smoke \
+  bash scripts/aws_test/reset_smoke_stack.sh
 ```
 
-S3 buckets and DynamoDB tables are retained by design to prevent accidental data
-loss. Delete retained data manually only after confirming you no longer need it.
+S3 buckets, DynamoDB tables, and ECR repositories are retained by design to
+prevent accidental data loss. The guarded reset script deletes those retained
+artifacts explicitly for the smoke stack.

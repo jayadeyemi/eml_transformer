@@ -60,6 +60,32 @@ class FakeStepFunctions:
 
 
 class BackfillWorkflowTests(unittest.TestCase):
+    def test_checkpoint_seed_advances_past_final_window_end(self):
+        """Backfill seeding must set checkpoint to the day AFTER end_date.
+
+        This prevents the next regular incremental run from re-fetching the
+        last backfilled day.
+        """
+        ingestion = FakeIngestionPipeline()
+        pipeline = BackfillPipeline(ingestion_pipeline=ingestion)
+
+        with patch(
+            "eml_transformer.pipelines.backfill_pipeline.create_source",
+            return_value=FakeSource(),
+        ):
+            pipeline.run_source(
+                source_name="iem_afos",
+                source_config={},
+                start_date="2026-01-01",
+                end_date="2026-01-05",
+                window_days=30,
+                seed_checkpoint=True,
+            )
+
+        seeded_values = [v for (_, v, _) in ingestion.seeded]
+        self.assertIn("2026-01-06", seeded_values, "Checkpoint must be end_date + 1 day")
+        self.assertNotIn("2026-01-05", seeded_values, "Checkpoint must NOT be end_date itself")
+
     def test_backfill_windows_validate_dates_and_window_size(self):
         with self.assertRaisesRegex(ValueError, "window_days"):
             list(
@@ -97,8 +123,11 @@ class BackfillWorkflowTests(unittest.TestCase):
 
         self.assertEqual(sorted(results), ["iem_afos", "newsapi"])
         self.assertEqual(len(results["newsapi"]), 2)
-        self.assertIn(("newsapi", "2026-01-03", "backfill_seed"), ingestion.seeded)
-        self.assertIn(("iem_afos", "2026-01-03", "backfill_seed"), ingestion.seeded)
+        # Checkpoint is seeded to the day AFTER the final window end (2026-01-03)
+        # so the next regular run starts from 2026-01-04, not re-fetching the
+        # last backfilled day.
+        self.assertIn(("newsapi", "2026-01-04", "backfill_seed"), ingestion.seeded)
+        self.assertIn(("iem_afos", "2026-01-04", "backfill_seed"), ingestion.seeded)
 
     def test_collection_service_summarizes_source_all_backfill_results(self):
         runner = CollectionServiceRunner.__new__(CollectionServiceRunner)

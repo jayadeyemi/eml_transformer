@@ -136,9 +136,8 @@ for example `s3://<bucket>/<prefix>/bronze/...`.
   call the upstream source even when all records are deduped locally.
 - There is no automated integration test that asserts the full S3 folder
   contract against LocalStack or a smoke bucket.
-- `config-render-from-outputs` renders live AWS resources only. Operators must
-  merge or preserve source configuration when using that generated file for
-  local smoke commands.
+- `config-render-from-outputs` renders live AWS resources and, when supplied
+  `--deployment`, merges source/path/model settings for local smoke commands.
 - GDELT parsing still materializes compressed GKG content before parsing. Large
   daily runs need the planned streaming parser.
 - GDELT article fetch output is not yet standardized into the generic

@@ -135,6 +135,8 @@ def validate_deployment_config(cfg: dict[str, Any]) -> list[str]:
     storage = cfg.get("storage", {})
     lifecycle = storage.get("lifecycle", {})
     services = cfg.get("services", {})
+    notifications = cfg.get("notifications", {})
+    runtime_secrets = cfg.get("runtime_secrets", {})
 
     _require_mapping(errors, cfg, "infra")
     _require_mapping(errors, cfg, "cost")
@@ -142,8 +144,8 @@ def validate_deployment_config(cfg: dict[str, Any]) -> list[str]:
     _require_mapping(errors, cfg, "services")
     _require_mapping(errors, cfg, "sources")
 
-    if infra.get("engine") not in {"cdk", "terraform", "hpc", "local"}:
-        errors.append("infra.engine must be one of: cdk, terraform, hpc, local")
+    if infra.get("engine") not in {"cdk", "hpc", "local"}:
+        errors.append("infra.engine must be one of: cdk, hpc, local")
 
     for key in ("stack_name", "region", "environment"):
         if not infra.get(key):
@@ -151,6 +153,44 @@ def validate_deployment_config(cfg: dict[str, Any]) -> list[str]:
 
     if storage.get("backend") not in {"s3", "local"}:
         errors.append("storage.backend must be either s3 or local")
+
+    if notifications and not isinstance(notifications, dict):
+        errors.append("notifications must be a mapping")
+    else:
+        sns_cfg = notifications.get("sns", {}) if isinstance(notifications, dict) else {}
+        if sns_cfg and not isinstance(sns_cfg, dict):
+            errors.append("notifications.sns must be a mapping")
+        elif sns_cfg:
+            recipients = sns_cfg.get("email_recipients", [])
+            if recipients is not None and not isinstance(recipients, list):
+                errors.append("notifications.sns.email_recipients must be a list")
+            for email in recipients or []:
+                if not isinstance(email, str) or "@" not in email:
+                    errors.append(
+                        "notifications.sns.email_recipients entries must be email strings"
+                    )
+
+    if runtime_secrets and not isinstance(runtime_secrets, dict):
+        errors.append("runtime_secrets must be a mapping")
+    else:
+        for secret_name, secret_cfg in runtime_secrets.items():
+            if not isinstance(secret_cfg, dict):
+                errors.append(f"runtime_secrets.{secret_name} must be a mapping")
+                continue
+            if not secret_cfg.get("secret_arn_env"):
+                errors.append(f"runtime_secrets.{secret_name}.secret_arn_env is required")
+            secret_services = secret_cfg.get("services", [])
+            if not isinstance(secret_services, list) or not secret_services:
+                errors.append(f"runtime_secrets.{secret_name}.services must be a non-empty list")
+                continue
+            invalid_services = [
+                service for service in secret_services if service not in COLLECTION_SERVICES
+            ]
+            if invalid_services:
+                errors.append(
+                    f"runtime_secrets.{secret_name}.services contains unknown services: "
+                    + ", ".join(invalid_services)
+                )
 
     glacier_days = lifecycle.get("bronze_glacier_ir_days")
     deep_days = lifecycle.get("bronze_deep_archive_days")
@@ -222,9 +262,6 @@ def validate_deployment_config(cfg: dict[str, Any]) -> list[str]:
 
 def deployment_config_warnings(cfg: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
-    aws_cfg = cfg.get("aws", {})
-    orchestration_cfg = cfg.get("orchestration", {})
-    batch_job_definitions = orchestration_cfg.get("batch_job_definitions", {})
     infra = cfg.get("infra", {})
     network = cfg.get("network", {})
 
@@ -254,26 +291,6 @@ def deployment_config_warnings(cfg: dict[str, Any]) -> list[str]:
                 "Add alert emails to receive cost and error notifications."
             )
 
-    if aws_cfg.get("terraform_stack") and not aws_cfg.get("infra_stack"):
-        warnings.append(
-            "aws.terraform_stack is a compatibility alias. Prefer "
-            "aws.infra_stack for new runtime configs."
-        )
-
-    if orchestration_cfg.get("batch_job_definition"):
-        warnings.append(
-            "orchestration.batch_job_definition is deprecated. Prefer "
-            "orchestration.batch_job_definitions.<service>."
-        )
-
-    if isinstance(batch_job_definitions, dict) and batch_job_definitions.get(
-        "collection_service"
-    ):
-        warnings.append(
-            "orchestration.batch_job_definitions.collection_service is "
-            "deprecated. Prefer service-specific job definitions."
-        )
-
     return warnings
 
 
@@ -295,8 +312,15 @@ def render_runtime_config(cfg: dict[str, Any]) -> dict[str, Any]:
     )
     environment = infra.get("environment", "dev")
     storage = cfg.get("storage", {})
+    sns_cfg = cfg.get("notifications", {}).get("sns", {})
     storage_backend = storage.get("backend", "s3")
     bucket = storage.get("bucket") or f"{stack}-data-{account_id}"
+    sns_topic_name = sns_cfg.get("topic_name") or f"{stack}-notifications"
+    sns_topic_arn = (
+        f"arn:aws:sns:{region}:{account_id}:{sns_topic_name}"
+        if sns_cfg.get("enabled", False)
+        else None
+    )
     service_job_definitions = service_job_definition_arns(cfg)
     storage_runtime = (
         {
@@ -353,6 +377,9 @@ def render_runtime_config(cfg: dict[str, Any]) -> dict[str, Any]:
             ),
             "batch_job_definitions": service_job_definitions,
         },
+        "notifications": {
+            "sns_topic_arn": sns_topic_arn,
+        },
         "paths": cfg.get("paths", {"root": "."}),
         "sources": cfg.get("sources", {}),
         "embeddings": cfg.get("embeddings", {}),
@@ -366,6 +393,7 @@ def build_runtime_environment(cfg: dict[str, Any]) -> dict[str, str]:
     queue_cfg = runtime["queues"]
     state_cfg = runtime["state"]
     orchestration_cfg = runtime["orchestration"]
+    notification_cfg = runtime.get("notifications", {})
     env = {
         "AWS_REGION": aws_cfg["region"],
         "EML_ENVIRONMENT": aws_cfg["environment"],
@@ -383,6 +411,8 @@ def build_runtime_environment(cfg: dict[str, Any]) -> dict[str, str]:
         "BATCH_JOB_QUEUE": orchestration_cfg["batch_job_queue"],
         "CLOUDWATCH_NAMESPACE": aws_cfg["cloudwatch_namespace"],
     }
+    if notification_cfg.get("sns_topic_arn"):
+        env["SNS_TOPIC_ARN"] = notification_cfg["sns_topic_arn"]
     gdelt_acquisition = cfg.get("sources", {}).get("gdelt", {}).get("acquisition", {})
 
     if gdelt_acquisition.get("max_urls_per_run") is not None:
@@ -555,6 +585,7 @@ def render_runtime_config_from_cfn_outputs(
     state_machine_arn = _get("StateMachineArn", "STATE_MACHINE_ARN")
     source_workflow_arn = _get("SourceWorkflowArn", "SOURCE_WORKFLOW_ARN")
     backfill_workflow_arn = _get("BackfillWorkflowArn", "BACKFILL_WORKFLOW_ARN")
+    sns_topic_arn = _get("SnsTopicArn", "SNS_TOPIC_ARN")
     infra_stack = runtime_env.get("INFRA_STACK", stack_name)
     cdk_stack = runtime_env.get("CDK_STACK", stack_name)
     environment = runtime_env.get("EML_ENVIRONMENT", "dev")
@@ -593,6 +624,9 @@ def render_runtime_config_from_cfn_outputs(
             "backfill_workflow_arn": backfill_workflow_arn,
             "batch_job_queue": job_queue,
             "batch_job_definitions": batch_job_definitions,
+        },
+        "notifications": {
+            "sns_topic_arn": sns_topic_arn or None,
         },
     }
 

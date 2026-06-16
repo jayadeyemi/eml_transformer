@@ -6,7 +6,7 @@ from io import BytesIO
 import pandas as pd 
 from datetime import datetime, timedelta
 
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from eml_transformer.ingestion.base import TextSource
 from eml_transformer.ingestion.registry import register_source
@@ -66,12 +66,36 @@ class GDELTSource(TextSource):
         from_date: str,
         to_date: str,
     ) -> list[dict[str, Any]]:
-        
+        logger.info(
+            "Starting GDELT fetch | from_date=%s | to_date=%s",
+            from_date,
+            to_date,
+        )
+
         timestamps = self._get_timestamps(from_date, to_date)
-        records  =  self._get_records(timestamps)
+
+        logger.info(
+            "Generated GDELT timestamps | files_to_download=%d",
+            len(timestamps),
+        )
+
+        records = self._get_records(timestamps)
+
+        logger.info(
+            "Loaded GDELT records | raw_records=%d",
+            len(records),
+        )
+
         filtered_df = self._filter_records(records)
-        
-        return filtered_df
+
+        logger.info(
+            "Finished GDELT fetch | raw_records=%d | filtered_records=%d | removed=%d",
+            len(records),
+            len(filtered_df),
+            len(records) - len(filtered_df),
+        )
+
+        return filtered_df.to_dict(orient="records")
     
 
     def standardize_record(self, record):
@@ -82,6 +106,10 @@ class GDELTSource(TextSource):
         self,
         records: pd.DataFrame,
     ) -> pd.DataFrame:
+        if records.empty:
+            logger.info("Skipping GDELT filtering | records=0")
+            return records
+
         records = records.copy()
 
         records["theme_match"] = self._filter_themes(records)
@@ -96,9 +124,31 @@ class GDELTSource(TextSource):
 
         records["filter_match_count"] = records[match_columns].sum(axis=1)
 
-        return records.loc[
+        filtered = records.loc[
             records["filter_match_count"] >= self.min_filter_matches
         ]
+
+        logger.info(
+            "Filtered GDELT records | input=%d | output=%d | removed=%d | min_matches=%d",
+            len(records),
+            len(filtered),
+            len(records) - len(filtered),
+            self.min_filter_matches,
+        )
+
+        logger.info(
+            "GDELT filter matches | theme=%d | organization=%d | location=%d",
+            int(records["theme_match"].sum()),
+            int(records["organization_match"].sum()),
+            int(records["location_match"].sum()),
+        )
+
+        logger.info(
+            "GDELT match count distribution | counts=%s",
+            records["filter_match_count"].value_counts().sort_index().to_dict(),
+        )
+
+        return filtered
 
     def _parse_themes(
         self,
@@ -204,20 +254,75 @@ class GDELTSource(TextSource):
         )
         return timestamps
   
-    def _get_records(self, timestamps):
+    def _get_records(
+        self,
+        timestamps: list[str],
+    ) -> pd.DataFrame:
         dfs = []
-        for timestamp in timestamps:
-            df = self.load_gkg_file(timestamp)
+        failed = 0
 
-            if df is not None and not df.empty:
-                dfs.append(df)
+        max_workers = min(8, len(timestamps))
+
+        logger.info(
+            "Downloading GDELT files in parallel | files=%d | workers=%d",
+            len(timestamps),
+            max_workers,
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._load_gkg_file, timestamp): timestamp
+                for timestamp in timestamps
+            }
+
+            for i, future in enumerate(as_completed(futures), start=1):
+                timestamp = futures[future]
+
+                try:
+                    df = future.result()
+                except Exception:
+                    logger.warning(
+                        "GDELT download failed | timestamp=%s",
+                        timestamp,
+                        exc_info=True,
+                    )
+                    failed += 1
+                    continue
+
+                if df is not None and not df.empty:
+                    dfs.append(df)
+
+                logger.debug(
+                    "GDELT download progress | completed=%d/%d | timestamp=%s | rows=%s",
+                    i,
+                    len(timestamps),
+                    timestamp,
+                    0 if df is None else len(df),
+                )
 
         if not dfs:
+            logger.warning(
+                "No GDELT records loaded | files=%d | failed=%d",
+                len(timestamps),
+                failed,
+            )
             return pd.DataFrame(columns=GKG_COLUMNS)
 
-        return pd.concat(dfs, ignore_index=True)
+        combined = pd.concat(dfs, ignore_index=True)
 
-    def _load_gkg_file(timestamp: str) -> pd.DataFrame | None:
+        logger.info(
+            "Finished parallel GDELT download | files=%d | failed=%d | records=%d",
+            len(timestamps),
+            failed,
+            len(combined),
+        )
+
+        return combined
+
+    def _load_gkg_file(
+        self,
+        timestamp: str,
+    ) -> pd.DataFrame | None:
         url = f"http://data.gdeltproject.org/gdeltv2/{timestamp}.gkg.csv.zip"
 
         try:
@@ -233,16 +338,28 @@ class GDELTSource(TextSource):
                     header=None,
                     dtype=str,
                     low_memory=False,
+                    encoding="latin1",
                 )
 
             df.columns = GKG_COLUMNS[: len(df.columns)]
             df["GDELT_TIMESTAMP"] = timestamp
             df["GDELT_URL"] = url
 
+            logger.debug(
+                "Loaded GDELT file | timestamp=%s | rows=%d",
+                timestamp,
+                len(df),
+            )
+
             return df
 
-        except Exception as e:
-            print(f"Failed {timestamp}: {e}")
+        except Exception:
+            logger.warning(
+                "Failed to load GDELT file | timestamp=%s | url=%s",
+                timestamp,
+                url,
+                exc_info=True,
+            )
             return None
 
 

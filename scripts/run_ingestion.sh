@@ -22,13 +22,11 @@ export OMP_NUM_THREADS=10
 #Change directories
 cd /N/project/eml_ai_forecasting/eml_transformer
 
+
 # run
 python -m eml_transformer.cli ingest \
     --source all \
-    --config configs/dev.yaml
-
-
-mail -s "EML Transformer Job ${SLURM_JOB_ID} Results" ${mail-user} < logs/run_${SLURM_JOB_ID}.out
+    --config configs/hpc.yaml
 
 # repeat every 12 hours
 sbatch --begin=now+12hour /N/project/eml_ai_forecasting/eml_transformer/scripts/run_ingestion.sh

@@ -1,7 +1,10 @@
 help:
 	@echo "Available commands:"
 	@echo "  make setup"
+	@echo "  make test-unit"
 
 setup:
 	python -m pip install -r requirements.txt
-	python -m pip install -e .
+
+test-unit:
+	python -m pytest tests/unit -q

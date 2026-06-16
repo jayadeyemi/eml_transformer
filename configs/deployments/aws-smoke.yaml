@@ -1,0 +1,101 @@
+# Final deployment layer for the AWS smoke stack.
+# Merge order: base -> this file.
+# Values in this file override earlier layers.
+
+# Selects the base profile this deployment composes.
+deployment:
+  name: aws-smoke
+  base: configs/aws.yaml
+
+# Output path for generated runtime config; not read by the merge loader.
+runtime:
+  config_path: configs/generated/aws-smoke.runtime.yaml
+
+# Overrides AWS platform identity from configs/aws.yaml.
+infra:
+  engine: cdk
+  stack_name: eml-transformer-smoke
+  account_id: null
+  region: us-east-1
+  environment: dev
+
+# Overrides placeholder network values from configs/aws.yaml.
+network:
+  subnet_ids: []
+  security_group_ids: []
+  assign_public_ip: true
+
+# Overrides AWS/dev cost defaults for low-cost smoke testing.
+cost:
+  monthly_budget_usd: 5
+  alert_emails:
+    - boadeyem@iu.edu
+  allow_nat_gateway: false
+  max_batch_vcpus: 2
+  log_retention_days: 7
+  cost_anomaly_detection: false
+
+# Adds smoke-specific SNS notifications; absent from base layers.
+notifications:
+  sns:
+    enabled: true
+    topic_name: eml-transformer-smoke-notifications
+    email_recipients:
+      - boadeyem@iu.edu
+
+# Adds runtime secret injection contract for selected Batch services.
+runtime_secrets:
+  NEWSAPI_KEY:
+    secret_arn_env: NEWSAPI_SECRET_ARN
+    services:
+      - ingest
+      - backfill
+      - run_all
+
+# Overrides service defaults from configs/aws.yaml.
+services:
+  ingest:
+    enabled: true
+    source: all
+    schedule:
+      enabled: true
+      expression: rate(10 minutes)
+  standardize:
+    enabled: true
+    source: all
+    schedule:
+      enabled: false
+      expression: null
+  embed:
+    enabled: false
+  backfill:
+    enabled: true
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    enabled: true
+    schedule:
+      enabled: true
+      expression: rate(10 minutes)
+  url_fetch_worker:
+    enabled: true
+    limits:
+      max_messages: 5
+      request_delay_seconds: 1
+      output_batch_size: 5
+      output_format: jsonl.gz
+  s3_restore_operator:
+    enabled: true
+
+# Overrides selected source defaults from configs/sources/*.yaml.
+sources:
+  gdelt:
+    enabled: true
+    acquisition:
+      max_files: 1
+      max_urls_per_run: 5
+      parser_version: gkg-weather-outage-v1

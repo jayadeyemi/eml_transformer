@@ -1,5 +1,6 @@
 # Environments
 .venv/
+.venv-cdk/
 .env
 
 # Python cache
@@ -9,12 +10,43 @@
 build/
 dist/
 *.egg-info/
-
+cdk.out/
+node_modules/
+**/.terraform/
+configs/generated/*
+!configs/generated/README.md
+!configs/generated/_example.yaml
+configs/generated_examples/
 
 data/*
 *.parquet
 *.csv
 
-
 DEBUG.ipynb
-template.ipynb
+
+# AI tool workspaces
+.cursor/
+.aider*
+.claude/
+CLAUDE.md
+.agents/
+.copilot/
+.continue/
+
+# Plans and generated docs (not source)
+plan/
+
+# Test results
+artifacts/aws_test_results/*
+!artifacts/aws_test_results/README.md
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/settings.json
+
+# Secrets / certs
+*.pem
+*.key

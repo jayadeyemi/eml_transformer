@@ -1,0 +1,10 @@
+# GDELT source/acquisition defaults.
+# Loaded by base profiles before the base file.
+# Deployment files may override sources.gdelt.
+sources:
+  gdelt:
+    enabled: true
+    acquisition:
+      max_files: null
+      max_urls_per_run: null
+      parser_version: gkg-weather-outage-v1

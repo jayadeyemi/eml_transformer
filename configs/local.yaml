@@ -1,0 +1,176 @@
+# Local base profile for CLI commands.
+# Merge order: source_configs -> this file -> deployment file.
+
+# Selects the source layers this base profile composes.
+base:
+  name: local
+  source_configs:
+    - configs/sources/gdelt.yaml
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+# Local identity. No durable infrastructure is created.
+infra:
+  engine: local
+  stack_name: eml-transformer-local
+  account_id: null
+  region: local
+  environment: local
+  project: eml_transformer
+
+# Cost keys are kept for shared validation shape; local runs do not create AWS budgets.
+cost:
+  monthly_budget_usd: 0
+  alert_emails: []
+  log_retention_days: 0
+  allow_nat_gateway: false
+  max_batch_vcpus: 0
+  ecr_retain_images: 0
+
+# Local filesystem storage.
+storage:
+  backend: local
+  base_dir: data
+
+# Local identity defaults used for tags/logging and env-var override shape.
+aws:
+  region: local
+  environment: local
+  infra_stack: eml-transformer-local
+  cdk_stack: null
+  project: eml_transformer
+  cloudwatch_namespace: EMLTransformer/Collection
+
+# Null locally; environment variables such as URL_FETCH_QUEUE_URL override these.
+queues:
+  url_fetch_queue_url: null
+  article_url_dlq_url: null
+
+# Null locally; environment variables such as URL_STATE_TABLE override these.
+state:
+  url_table: null
+  run_table: null
+  domain_throttle_table: null
+
+# Null locally; environment variables such as BATCH_JOB_QUEUE override these.
+orchestration:
+  state_machine_arn: null
+  source_workflow_arn: null
+  backfill_workflow_arn: null
+  batch_job_queue: null
+  batch_job_definitions:
+    ingest: null
+    standardize: null
+    embed: null
+    backfill: null
+    run_all: null
+    gdelt_discovery: null
+    url_fetch_worker: null
+    s3_restore_operator: null
+
+# Local service defaults.
+services:
+  ingest:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  standardize:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  embed:
+    enabled: false
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 4096
+      timeout_seconds: 7200
+    schedule:
+      enabled: false
+      expression: null
+  backfill:
+    enabled: true
+    source: all
+    window_days: 30
+    init_checkpoint: false
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 7200
+    schedule:
+      enabled: false
+      expression: null
+  run_all:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 4096
+      timeout_seconds: 10800
+    schedule:
+      enabled: false
+      expression: null
+  gdelt_discovery:
+    enabled: true
+    source: gdelt
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: rate(1 hour)
+  url_fetch_worker:
+    enabled: true
+    source: url_fetch
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    limits:
+      max_messages: 50
+      request_delay_seconds: 1
+      output_batch_size: 100
+      output_format: jsonl.gz
+    schedule:
+      enabled: false
+      expression: null
+  s3_restore_operator:
+    enabled: true
+    source: s3_restore
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    schedule:
+      enabled: false
+      expression: null
+
+paths:
+  root: .
+
+# Embedding defaults for local runs.
+embeddings:
+  provider: sentence_transformer
+  model: nvidia/llama-nemotron-embed-vl-1b-v2
+  batch_size: 16
+  device: cpu
+  normalize_embeddings: true
+  trust_remote_code: true
+  text_columns:
+    - title
+    - text

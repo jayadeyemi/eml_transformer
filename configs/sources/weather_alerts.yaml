@@ -1,0 +1,21 @@
+# Weather alert source defaults.
+# Loaded by base profiles before the base file.
+# Deployment files may override sources.weather_alerts.
+sources:
+  weather_alerts:
+    enabled: true
+    areas:
+      - IN
+      - IL
+      - MI
+      - OH
+      - KY
+      - WI
+      - MN
+      - IA
+      - MO
+      - AR
+      - LA
+      - MS
+      - ND
+      - SD

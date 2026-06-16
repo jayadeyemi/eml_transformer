@@ -1,0 +1,162 @@
+# AWS/CDK base profile.
+# Merge order: source_configs -> this file -> deployment file.
+
+# Selects the source layers this base profile composes.
+base:
+  name: aws
+  source_configs:
+    - configs/sources/gdelt.yaml
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+# Default AWS infrastructure identity. Deployment files override stack/env fields.
+infra:
+  engine: cdk
+  stack_name: eml-transformer-dev
+  account_id: null
+  region: us-east-1
+  environment: dev
+  project: eml_transformer
+
+# Default AWS cost controls. Deployment files override budget, retention, and alerts.
+cost:
+  monthly_budget_usd: 50
+  alert_emails: []
+  log_retention_days: 30
+  allow_nat_gateway: false
+  max_batch_vcpus: 32
+  ecr_retain_images: 10
+
+# Default network placeholders. Real deployments override these through the
+# deployment file or BATCH_SUBNET_IDS/BATCH_SECURITY_GROUP_IDS.
+network:
+  subnet_ids:
+    - subnet-replace-me
+  security_group_ids:
+    - sg-replace-me
+  assign_public_ip: true
+
+# AWS storage defaults. Runtime rendering turns this into generated S3
+# bucket/prefix values; deployments may override lifecycle/restore settings.
+storage:
+  backend: s3
+  prefix: ""
+  lifecycle:
+    bronze_glacier_ir_days: 90
+    bronze_deep_archive_days: 365
+    restore_staging_expiration_days: 30
+  restore:
+    operator_principal_arns: []
+    bulk_restore_enabled: false
+
+# CloudWatch namespace defaults. Deployment layers may override.
+observability:
+  cloudwatch_namespace: EMLTransformer/Collection
+
+# AWS service defaults. Deployment files override service enablement,
+# compute, schedules, and limits.
+services:
+  ingest:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  standardize:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  embed:
+    enabled: false
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 4096
+      timeout_seconds: 7200
+    schedule:
+      enabled: false
+      expression: null
+  backfill:
+    enabled: true
+    source: all
+    window_days: 30
+    init_checkpoint: false
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 7200
+    schedule:
+      enabled: false
+      expression: null
+  run_all:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 4096
+      timeout_seconds: 10800
+    schedule:
+      enabled: false
+      expression: null
+  gdelt_discovery:
+    enabled: true
+    source: gdelt
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: rate(1 hour)
+  url_fetch_worker:
+    enabled: true
+    source: url_fetch
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    limits:
+      max_messages: 50
+      request_delay_seconds: 1
+      output_batch_size: 100
+      output_format: jsonl.gz
+    schedule:
+      enabled: false
+      expression: null
+  s3_restore_operator:
+    enabled: true
+    source: s3_restore
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    schedule:
+      enabled: false
+      expression: null
+
+paths:
+  root: .
+
+# Embedding defaults for AWS jobs.
+embeddings:
+  provider: sentence_transformer
+  model: nvidia/llama-nemotron-embed-vl-1b-v2
+  batch_size: 16
+  device: cpu
+  normalize_embeddings: true
+  trust_remote_code: true
+  text_columns:
+    - title
+    - text

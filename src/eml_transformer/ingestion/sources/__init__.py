@@ -1,3 +1,4 @@
+"""Auto-register built-in ingestion source modules."""
 
 from pathlib import Path
 import importlib

@@ -39,7 +39,6 @@ sources:
       timeout: 30
 
   newsapi:
-  
     enabled: true
     api_key_env: NEWSAPI_KEY
     query: >
@@ -63,7 +62,7 @@ sources:
 
   weather_alerts:
     enabled: true
-    areas: 
+    areas:
       ["IN", "IL", "MI", "OH", "KY",
       "WI", "MN", "IA", "MO", "AR",
       "LA", "MS", "ND", "SD"]

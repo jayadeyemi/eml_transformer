@@ -1,311 +1,278 @@
 # Project Structure
 
-This document explains the top-level folder structure of the project and the purpose of each major directory.
+This document explains the top-level folder structure of the project and the
+purpose of each major directory.
 
 ## Overview
 
-The repository is organized to separate code, configuration, data, documentation, notebooks, scripts, and tests.
+The repository separates code, configuration, data, documentation, notebooks,
+scripts, infrastructure, and tests.
 
 ```text
 project/
-├── configs/
-├── data/
-├── docs/
-├── notebooks/
-├── scripts/
-├── src/
-└── tests/
++-- artifacts/
++-- configs/
++-- data/
++-- docs/
++-- infra/
++-- notebooks/
++-- scripts/
++-- src/
++-- tests/
 ```
+
+## `artifacts/`
+
+The `artifacts/` folder stores generated evidence from local and AWS validation
+runs. Generated files are ignored by git.
+
+```text
+artifacts/
++-- aws_test_results/
+```
+
+`artifacts/aws_test_results/` is the default destination for AWS phase logs and
+JSON test evidence.
 
 ## `configs/`
 
-The `configs/` folder stores configuration files that control project behavior without requiring changes to the source code.
+The `configs/` folder stores configuration files that control project behavior
+without requiring source code changes.
 
-For example:
+Configuration files define:
 
-```text
-configs/
-└── ingestion.yaml
-```
-
-Configuration files are useful for storing settings such as:
 - enabled data sources
 - source parameters
 - storage locations
-- run options
-- preprocessing settings
+- deployment settings
+- runtime service limits
+- preprocessing and embedding settings
 
-Using configuration files makes experiments easier to repeat because the settings for a run can be saved separately from the code.
+Important subdirectories:
+
+```text
+configs/
++-- deployments/
++-- generated/
++-- aws.yaml
++-- hpc.yaml
++-- local.yaml
++-- sources/
+```
+
+Base profiles live at the configs root. Generated AWS runtime configs under
+`configs/generated/` are local artifacts and should not be committed.
 
 ## `data/`
 
-The `data/` folder stores project data outputs.
+The `data/` folder stores local project outputs. Local runs normally use
+`data/` as the root. AWS deployment configs currently use `paths.root: .`, so
+the same generic medallion keys start at `bronze/`, `silver/`, `gold/`, and
+`metadata/` in S3.
 
-It is organized by processing level and metadata.
+See `docs/aws_s3_layout.md` for the full AWS object layout, including GDELT,
+article fetch, manifests, restore staging, and lifecycle-managed prefixes.
 
 ```text
 data/
-├── bronze/
-├── silver/
-├── gold/
-└── metadata/
++-- bronze/
++-- silver/
++-- gold/
++-- metadata/
 ```
 
 ### `data/bronze/`
 
-The `bronze/` folder stores raw records collected from each source.
-
+The `bronze/` folder stores raw records collected from each generic source.
 These files preserve the original source output as closely as possible.
 
-Example:
+Examples:
 
 ```text
 data/bronze/source=miso_notifications/records.jsonl
 data/bronze/source=weather_alerts/records.jsonl
 ```
 
+In S3, generic source appends can be stored under
+`bronze/source=<source>/records.jsonl.parts/`; the S3 reader combines the marker
+object and all part files.
+
 ### `data/silver/`
 
-The `silver/` folder stores standardized records after they have been parsed into a shared format.
+The `silver/` folder stores standardized records after they have been parsed
+into a shared schema.
+
+Examples:
+
+```text
+data/silver/source=miso_notifications/records.parquet
+data/silver/source=weather_alerts/records.parquet
+```
+
+### `data/gold/`
+
+The `gold/` folder stores model-ready outputs such as embeddings.
 
 Example:
 
 ```text
-data/silver/text_records/source=miso_notifications/records.csv
-data/silver/text_records/source=weather_alerts/records.csv
+data/gold/model=nvidia-nv-embedqa-e5-v5/source=weather_alerts/embeddings.parquet
 ```
 
 ### `data/metadata/`
 
-The `metadata/` folder stores information needed to track processing state.
-
-For example, the deduplication files help keep track of which records have already been seen.
+The `metadata/` folder stores processing state for generic sources.
 
 ```text
-data/metadata/dedupe/
+data/metadata/dedupe/source=<source>.json
+data/metadata/checkpoint/source=<source>.json
 ```
 
-This supports incremental updates and prevents repeated records from being written multiple times.
+This supports incremental updates and prevents repeated records from being
+written multiple times.
 
 ## `docs/`
 
 The `docs/` folder stores project documentation.
 
-Example:
-
 ```text
 docs/
-├── architecture.md
-├── ingestion_pipeline.md
-├── project_goals.pdf
-└── sample_prompts.md
++-- architecture.md
++-- aws_s3_layout.md
++-- ingestion_pipeline.md
++-- local_setup.md
++-- project_structure.md
 ```
 
-This folder is used to explain:
+Use this folder for:
+
 - project goals
 - architecture decisions
-- pipeline logic
-- sample prompts
+- pipeline behavior
+- storage contracts
+- operator runbooks
 - design notes
 
-Keeping documentation in the repository makes the project easier to understand, maintain, and share.
+## `infra/`
+
+The `infra/` folder contains infrastructure-as-code.
+
+```text
+infra/
++-- cdk/
+```
+
+CDK is the AWS deployment path for collection infrastructure.
 
 ## `notebooks/`
 
-The `notebooks/` folder stores Jupyter notebooks used for exploration, debugging, and quick analysis.
-
-Example:
-
-```text
-notebooks/
-└── DEBUG.ipynb
-```
+The `notebooks/` folder stores Jupyter notebooks used for exploration,
+debugging, and quick analysis.
 
 Notebooks are useful for:
+
 - inspecting outputs
 - testing ideas quickly
 - debugging data issues
 - visualizing intermediate results
 
-They should generally be used for exploration rather than core reusable code.
+They should be used for exploration rather than core reusable code.
 
 ## `scripts/`
 
-The `scripts/` folder stores standalone utility scripts.
+The `scripts/` folder stores standalone utility scripts and operational tests.
 
-Example:
+Examples include:
+
+- backfilling a source
+- running AWS test phases
+- testing a temporary workflow
+- performing maintenance tasks
+
+AWS operational scripts are grouped by role:
 
 ```text
 scripts/
-└── backfill_newsapi.py
++-- aws/
+    +-- cleanup/
+    +-- deploy/
+    +-- lib/
+    +-- phases/
+    +-- run_all.sh
 ```
-
-Scripts are useful for one-off tasks or operational commands that do not need to be part of the main package interface.
-
-Examples include:
-- backfilling a source
-- running a special data pull
-- testing a temporary workflow
-- performing maintenance tasks
 
 ## `src/`
 
 The `src/` folder contains the main Python package code.
 
-Example:
-
 ```text
 src/
-└── eml_transformer/
++-- eml_transformer/
 ```
 
-This is where reusable project logic lives.
+Keeping source code inside `src/` helps the project behave like a proper
+installable Python package and keeps runtime logic separate from data,
+notebooks, configs, and docs.
 
-Keeping source code inside `src/` helps make the project behave like a proper installable Python package. It also keeps code separate from data, notebooks, configs, and documentation.
+Major areas include:
 
-The package contains modules for:
+- acquisition
+- cloud runtime integration
 - command-line execution
-- ingestion logic
+- deployment config helpers
+- ingestion source interfaces
+- pipelines
 - storage helpers
 - text processing
 - utilities
-- future modeling code
-
-## `src/eml_transformer/`
-
-This is the main project package.
-
-```text
-src/eml_transformer/
-```
-
-It contains the reusable Python code used across the project.
-
-Major areas include:
-- ingestion
-- pipelines
-- storage
-- text processing
-- utilities
-- models
-
-## `src/eml_transformer/ingestion/`
-
-This folder contains code related to collecting and standardizing data from external sources.
-
-It includes shared ingestion interfaces, schemas, source registration, and source-specific implementations.
-
-## `src/eml_transformer/storage/`
-
-This folder contains code for managing storage paths and reading or writing outputs.
-
-It helps centralize file handling so paths and storage behavior are not scattered throughout the codebase.
-
-## `src/eml_transformer/text_processing/`
-
-This folder contains reusable text cleaning and validation logic.
-
-Examples include:
-- whitespace cleanup
-- HTML cleaning
-- text validation
-- basic formatting checks
-
-Keeping this separate makes it easier to reuse the same text processing logic across sources.
-
-## `src/eml_transformer/utils/`
-
-This folder contains general helper code used across the project.
-
-Examples include:
-- configuration loading
-- stable hashing
-- timestamp utilities
-- reusable support functions
-
-## `src/eml_transformer/models/`
-
-This folder is reserved for future modeling-related code.
-
-It can later contain logic for:
-- embedding generation
-- model training
-- model evaluation
-- forecasting models
-
-## `src/eml_transformer/pipelines/`
-
-This folder contains higher-level orchestration code.
-
-Pipeline modules are responsible for connecting multiple pieces of the project together into a repeatable workflow.
 
 ## `tests/`
 
 The `tests/` folder stores automated tests for the project.
 
-Tests are used to verify that important parts of the code behave correctly.
+Tests verify:
 
-Examples of what can be tested:
 - source parsing
 - schema validation
 - text cleaning
 - deduplication
 - config loading
 - storage paths
+- AWS runtime behavior
 
-Adding tests makes the project safer to modify as it grows.
+Tests are grouped by scope:
+
+```text
+tests/
++-- aws_contract/
++-- contract/
++-- integration/
++-- unit/
+```
+
+Live AWS integration workflows currently run through `scripts/aws/`; the
+`tests/integration/` folder is reserved for future pytest-based integration
+coverage.
 
 ## Root-Level Files
 
-The project also contains several important root-level files.
+Important root-level files include:
 
-### `README.md`
-
-The README provides a high-level introduction to the project.
-
-It usually includes:
-- project purpose
-- setup instructions
-- basic usage
-- repository overview
-
-### `pyproject.toml`
-
-This file defines Python package settings.
-
-It can include:
-- package metadata
-- dependencies
-- command-line entry points
-- build settings
-
-### `requirements.txt`
-
-This file lists Python dependencies needed to run the project.
-
-### `MakeFile`
-
-The MakeFile provides shortcuts for common development commands.
-
-Examples may include:
-- installing dependencies
-- running tests
-- formatting code
-- running ingestion commands
-
+- `README.md`: high-level introduction, setup, and basic usage.
+- `pyproject.toml`: package metadata, dependencies, and CLI entry points.
+- `requirements.txt`: compatibility install file for the AWS runtime extra.
+- `MakeFile`: shortcuts for common development commands.
 
 ## Summary
 
-The repository is organized around clear responsibilities:
-
 ```text
-configs/    -> runtime settings
-data/       -> stored project data
-docs/       -> documentation
+artifacts/  -> generated run logs and test evidence
+configs/    -> runtime and deployment settings
+data/       -> local stored project data
+docs/       -> developer and operator documentation
+infra/      -> infrastructure-as-code
 notebooks/  -> exploration and debugging
-scripts/    -> standalone utility scripts
+scripts/    -> operational and utility scripts
 src/        -> reusable package code
 tests/      -> automated tests
 ```
-
-This structure keeps the project easier to understand, easier to extend, and easier to maintain.

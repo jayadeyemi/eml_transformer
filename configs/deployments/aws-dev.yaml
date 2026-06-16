@@ -1,0 +1,42 @@
+# Final deployment layer for the AWS dev stack.
+# Merge order: base -> this file.
+# Values in this file override earlier layers.
+
+# Selects the base profile this deployment composes.
+deployment:
+  name: aws-dev
+  base: configs/aws.yaml
+
+# Output path for generated runtime config; not read by the merge loader.
+runtime:
+  config_path: configs/generated/aws-dev.runtime.yaml
+
+# Overrides AWS platform identity from configs/aws.yaml.
+infra:
+  engine: cdk
+  stack_name: eml-transformer-dev
+  account_id: null
+  region: us-east-1
+  environment: dev
+
+# Overrides AWS cost defaults from configs/aws.yaml.
+cost:
+  monthly_budget_usd: 50
+  alert_emails: []
+  log_retention_days: 14
+  allow_nat_gateway: false
+
+# Overrides service defaults from configs/aws.yaml.
+services:
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    schedule:
+      enabled: false
+      expression: rate(1 hour)
+  url_fetch_worker:
+    limits:
+      max_messages: 50
+      request_delay_seconds: 1
+      output_batch_size: 100
+      output_format: jsonl.gz

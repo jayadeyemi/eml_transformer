@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from sentence_transformers import SentenceTransformer
-
 
 class SentenceTransformerEmbedder:
     def __init__(
@@ -13,6 +11,14 @@ class SentenceTransformerEmbedder:
     ):
         self.model_name = model_name
         self.normalize_embeddings = normalize_embeddings
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "Embedding requires the optional HPC/modeling dependencies. "
+                "Install them with: python -m pip install -e .[hpc]"
+            ) from exc
 
         self.model = SentenceTransformer(
             model_name,

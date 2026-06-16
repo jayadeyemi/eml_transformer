@@ -1,0 +1,177 @@
+# Generic HPC base profile.
+# Merge order: source_configs -> this file -> deployment file.
+
+# Selects the source layers this base profile composes.
+base:
+  name: hpc
+  source_configs:
+    - configs/sources/weather_alerts.yaml
+    - configs/sources/newsapi.yaml
+    - configs/sources/miso_notifications.yaml
+    - configs/sources/iem_afos.yaml
+
+# Generic HPC identity. Deployments set environment-specific names.
+infra:
+  engine: hpc
+  stack_name: eml-transformer-hpc
+  account_id: null
+  region: local
+  environment: local
+  project: eml_transformer
+
+# Cost keys are kept for shared validation shape; HPC does not create AWS budgets.
+cost:
+  monthly_budget_usd: 0
+  alert_emails: []
+  log_retention_days: 0
+  allow_nat_gateway: false
+  max_batch_vcpus: 0
+  ecr_retain_images: 0
+
+# HPC uses local filesystem storage.
+storage:
+  backend: local
+  base_dir: data
+
+# Generic shared config shape; no AWS resources are created.
+aws:
+  region: local
+  environment: local
+  infra_stack: eml-transformer-hpc
+  cdk_stack: null
+  project: eml_transformer
+  cloudwatch_namespace: EMLTransformer/Collection
+
+# Null on HPC; environment variables can override if a job intentionally talks to AWS.
+queues:
+  url_fetch_queue_url: null
+  article_url_dlq_url: null
+
+# Null on HPC; environment variables can override if needed.
+state:
+  url_table: null
+  run_table: null
+  domain_throttle_table: null
+
+# Null on HPC; environment variables can override if needed.
+orchestration:
+  state_machine_arn: null
+  source_workflow_arn: null
+  backfill_workflow_arn: null
+  batch_job_queue: null
+  batch_job_definitions: {}
+
+# Slurm/HPC scheduler defaults.
+hpc:
+  scheduler: slurm
+  partition: general
+  account: null
+  default_time: "02:00:00"
+  embeddings:
+    preferred: true
+    gpu: true
+
+# HPC service defaults.
+services:
+  ingest:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  standardize:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: null
+  embed:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 4
+      memory_mib: 32768
+      timeout_seconds: 14400
+    schedule:
+      enabled: false
+      expression: null
+  backfill:
+    enabled: true
+    source: all
+    window_days: 30
+    init_checkpoint: false
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 7200
+    schedule:
+      enabled: false
+      expression: null
+  run_all:
+    enabled: true
+    source: all
+    compute:
+      vcpu: 1
+      memory_mib: 4096
+      timeout_seconds: 10800
+    schedule:
+      enabled: false
+      expression: null
+  gdelt_discovery:
+    enabled: false
+    source: gdelt
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 3600
+    schedule:
+      enabled: false
+      expression: rate(1 hour)
+  url_fetch_worker:
+    enabled: false
+    source: url_fetch
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    limits:
+      max_messages: 50
+      request_delay_seconds: 1
+      output_batch_size: 100
+      output_format: jsonl.gz
+    schedule:
+      enabled: false
+      expression: null
+  s3_restore_operator:
+    enabled: false
+    source: s3_restore
+    compute:
+      vcpu: 1
+      memory_mib: 2048
+      timeout_seconds: 1800
+    schedule:
+      enabled: false
+      expression: null
+
+paths:
+  root: .
+
+# HPC defaults to GPU embeddings.
+embeddings:
+  provider: sentence_transformer
+  model: nvidia/llama-nemotron-embed-vl-1b-v2
+  batch_size: 16
+  device: cuda
+  normalize_embeddings: true
+  trust_remote_code: true
+  text_columns:
+    - title
+    - text

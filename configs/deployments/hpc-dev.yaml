@@ -1,0 +1,34 @@
+# Final deployment layer for HPC dev.
+# Merge order: base -> this file.
+# Values in this file override earlier layers.
+
+# Selects the base profile this deployment composes.
+deployment:
+  name: hpc-dev
+  base: configs/hpc.yaml
+
+# Overrides generic HPC base identity from configs/hpc.yaml.
+infra:
+  engine: hpc
+  stack_name: eml-transformer-hpc-dev
+  account_id: null
+  region: local
+  environment: dev
+
+# Direct HPC dev CLI identity; no AWS resources are created.
+aws:
+  region: local
+  environment: dev
+  infra_stack: eml-transformer-hpc-dev
+  cdk_stack: null
+  project: eml_transformer
+  cloudwatch_namespace: EMLTransformer/Collection
+
+# Resets shared environment cost/log values; HPC deployments do not create AWS budgets.
+cost:
+  monthly_budget_usd: 0
+  alert_emails: []
+  log_retention_days: 0
+  allow_nat_gateway: false
+  max_batch_vcpus: 0
+  ecr_retain_images: 0

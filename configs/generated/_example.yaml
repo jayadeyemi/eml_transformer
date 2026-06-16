@@ -1,0 +1,77 @@
+# Example generated AWS runtime config.
+# Real files in this directory are produced by config-render or
+# config-render-from-outputs and should not be edited by hand.
+
+storage:
+  backend: s3
+  bucket: eml-transformer-dev-data-123456789012
+  prefix: ""
+  region: us-east-1
+
+aws:
+  region: us-east-1
+  environment: dev
+  infra_stack: eml-transformer-dev
+  cdk_stack: eml-transformer-dev
+  project: eml_transformer
+  cloudwatch_namespace: EMLTransformer/Collection
+
+queues:
+  url_fetch_queue_url: https://sqs.us-east-1.amazonaws.com/123456789012/eml-transformer-dev-url-fetch
+  article_url_dlq_url: https://sqs.us-east-1.amazonaws.com/123456789012/eml-transformer-dev-url-fetch-dlq
+
+state:
+  url_table: eml-transformer-dev-url-state
+  run_table: eml-transformer-dev-run-state
+  domain_throttle_table: eml-transformer-dev-domain-throttle
+
+orchestration:
+  state_machine_arn: arn:aws:states:us-east-1:123456789012:stateMachine:eml-transformer-dev-acquisition
+  source_workflow_arn: arn:aws:states:us-east-1:123456789012:stateMachine:eml-transformer-dev-source-workflow
+  backfill_workflow_arn: arn:aws:states:us-east-1:123456789012:stateMachine:eml-transformer-dev-backfill-workflow
+  batch_job_queue: arn:aws:batch:us-east-1:123456789012:job-queue/eml-transformer-dev-collection
+  batch_job_definitions:
+    ingest: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-ingest
+    standardize: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-standardize
+    embed: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-embed
+    backfill: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-backfill
+    run_all: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-run-all
+    gdelt_discovery: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-gdelt-discovery
+    url_fetch_worker: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-url-fetch-worker
+    s3_restore_operator: arn:aws:batch:us-east-1:123456789012:job-definition/eml-transformer-dev-s3-restore-operator
+
+notifications:
+  sns_topic_arn: null
+
+paths:
+  root: .
+
+sources:
+  gdelt:
+    enabled: true
+    acquisition:
+      max_files: null
+      max_urls_per_run: null
+      parser_version: gkg-weather-outage-v1
+  weather_alerts:
+    enabled: true
+    areas:
+      - IN
+      - IL
+  newsapi:
+    enabled: true
+    api_key_env: NEWSAPI_KEY
+    query: electricity grid
+    language: en
+    page_size: 100
+
+embeddings:
+  provider: sentence_transformer
+  model: nvidia/llama-nemotron-embed-vl-1b-v2
+  batch_size: 16
+  device: cpu
+  normalize_embeddings: true
+  trust_remote_code: true
+  text_columns:
+    - title
+    - text

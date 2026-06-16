@@ -1,0 +1,22 @@
+# NewsAPI source defaults.
+# Loaded by base profiles before the base file.
+# Deployment files may override sources.newsapi.
+sources:
+  newsapi:
+    enabled: true
+    api_key_env: NEWSAPI_KEY
+    query: >
+      (
+        "Midcontinent Independent System Operator"
+        OR ERCOT
+        OR PJM
+      )
+      AND
+      (
+        electricity
+        OR grid
+        OR "power market"
+        OR transmission
+      )
+    language: en
+    page_size: 100

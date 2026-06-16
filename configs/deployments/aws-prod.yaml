@@ -1,0 +1,42 @@
+# Final deployment layer for the AWS production stack.
+# Merge order: base -> this file.
+# Values in this file override earlier layers.
+
+# Selects the base profile this deployment composes.
+deployment:
+  name: aws-prod
+  base: configs/aws.yaml
+
+# Output path for generated runtime config; not read by the merge loader.
+runtime:
+  config_path: configs/generated/aws-prod.runtime.yaml
+
+# Overrides AWS platform identity from configs/aws.yaml.
+infra:
+  engine: cdk
+  stack_name: eml-transformer-prod
+  account_id: null
+  region: us-east-1
+  environment: prod
+
+# Overrides AWS cost defaults from configs/aws.yaml.
+cost:
+  monthly_budget_usd: 250
+  alert_emails: []
+  log_retention_days: 90
+  allow_nat_gateway: false
+
+# Overrides service defaults from configs/aws.yaml.
+services:
+  run_all:
+    enabled: false
+  gdelt_discovery:
+    schedule:
+      enabled: true
+      expression: rate(1 hour)
+  url_fetch_worker:
+    limits:
+      max_messages: 200
+      request_delay_seconds: 1
+      output_batch_size: 250
+      output_format: jsonl.gz

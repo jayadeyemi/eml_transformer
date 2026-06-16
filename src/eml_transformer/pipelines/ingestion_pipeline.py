@@ -105,12 +105,10 @@ class IngestionPipeline:
                 to_date,
             )
 
-            raw = source.fetch_raw(
+            raw_records = source.fetch_records(
                 from_date=effective_from_date,
                 to_date=to_date,
             )
-
-            raw_records = source.parse_records(raw)
 
             seen_hashes = self._load_seen(dedupe_key)
             bronze_rows = []

@@ -43,57 +43,19 @@ class WeatherAlertSource(TextSource):
         self.base_url = "https://api.weather.gov/alerts/active"
 
         self.headers = {
-            "User-Agent": "eml-transformer-research jackyeung99@gmail.com",
+            "User-Agent": "eml-transformer-research",
             "Accept": "application/geo+json",
         }
 
-    def fetch_raw(self, from_date=None, to_date=None) -> list[dict[str, Any]]:
-        responses = []
-
-        for area in self.areas:
-            response = requests.get(
-                self.base_url,
-                params={"area": area},
-                headers=self.headers,
-                timeout=self.timeout,
-            )
-
-            response.raise_for_status()
-
-            responses.append({
-                "query_area": area,
-                "response": response.json(),
-            })
-
-        return responses
-
-    def parse_records(
+    def fetch_records(
         self,
-        raw: list[dict[str, Any]],
+        from_date=None,
+        to_date=None,
     ) -> list[dict[str, Any]]:
-        records = []
-        seen_ids = set()
+        raw_responses = self._fetch_raw()
 
-        for item in raw:
-            query_area = item["query_area"]
-            features = item["response"].get("features", [])
-
-            for feature in features:
-                props = feature.get("properties", {})
-                source_id = props.get("id") or feature.get("id")
-
-                if source_id in seen_ids:
-                    continue
-
-                seen_ids.add(source_id)
-
-                records.append({
-                    "query_area": query_area,
-                    "feature": feature,
-                })
-
-        return records
-
+        return self._parse_records(raw_responses)
+    
     def standardize_record(self, record: dict[str, Any]) -> TextRecord:
         query_area = record.get("query_area")
         feature = record.get("feature", {})
@@ -157,3 +119,57 @@ class WeatherAlertSource(TextSource):
             },
             raw=feature,
         )
+    
+    def _fetch_raw(
+        self,
+    ) -> list[dict[str, Any]]:
+        """
+        Download raw weather.gov responses.
+        """
+        responses = []
+
+        for area in self.areas:
+            response = requests.get(
+                self.base_url,
+                params={"area": area},
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+
+            response.raise_for_status()
+
+            responses.append(
+                {
+                    "query_area": area,
+                    "response": response.json(),
+                }
+            )
+
+        return responses
+
+    def _parse_records(
+        self,
+        raw: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        records = []
+        seen_ids = set()
+
+        for item in raw:
+            query_area = item["query_area"]
+            features = item["response"].get("features", [])
+
+            for feature in features:
+                props = feature.get("properties", {})
+                source_id = props.get("id") or feature.get("id")
+
+                if source_id in seen_ids:
+                    continue
+
+                seen_ids.add(source_id)
+
+                records.append({
+                    "query_area": query_area,
+                    "feature": feature,
+                })
+
+        return records

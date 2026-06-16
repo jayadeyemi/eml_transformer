@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from typing import Any
 
 import requests
@@ -7,9 +10,8 @@ from eml_transformer.ingestion.base import TextSource
 from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord, utc_now
 
-
-import logging
 logger = logging.getLogger(__name__)
+
 
 @register_source("miso_notifications")
 class MISONotificationSource(TextSource):
@@ -35,38 +37,23 @@ class MISONotificationSource(TextSource):
             "Referer": "https://www.misoenergy.org/markets-and-operations/notifications/",
         }
 
-    def fetch_raw(self, from_date=None, to_date=None) -> Any:
-        params = {
-            "topic": self.topic,
-            "take": self.take,
-        }
+    def fetch_records(
+        self,
+        from_date=None,
+        to_date=None,
+    ) -> list[dict[str, Any]]:
+        """
+        Public ingestion method.
 
-        response = requests.get(
-            self.base_url,
-            params=params,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        Returns source-native MISO notification records ready to write to bronze.
+        """
+        raw_response = self._fetch_raw()
+        return self._parse_records(raw_response)
 
-        response.raise_for_status()
-        return response.json()
-
-    def parse_records(self, raw: Any) -> list[dict[str, Any]]:
-        records = []
-
-        for group in raw:
-            topic = group.get("topic")
-            notifications = group.get("notifications", [])
-
-            for notification in notifications:
-                records.append({
-                    "topic": topic,
-                    "notification": notification,
-                })
-
-        return records
-
-    def standardize_record(self, record: dict[str, Any]) -> TextRecord:
+    def standardize_record(
+        self,
+        record: dict[str, Any],
+    ) -> TextRecord:
         topic = record.get("topic")
         notification = record.get("notification", {})
 
@@ -74,11 +61,7 @@ class MISONotificationSource(TextSource):
         publish_date = notification.get("publishDate")
         body_html = notification.get("body") or ""
 
-        body_text = BeautifulSoup(
-            body_html,
-            "html.parser",
-        ).get_text(" ", strip=True)
-
+        body_text = self._html_to_text(body_html)
         url = self._build_url(notification)
 
         return TextRecord(
@@ -109,7 +92,61 @@ class MISONotificationSource(TextSource):
             raw=notification,
         )
 
-    def _build_url(self, notification: dict[str, Any]) -> str | None:
+    def _fetch_raw(self) -> Any:
+        """
+        Download raw grouped MISO notification response.
+        """
+        params = {
+            "topic": self.topic,
+            "take": self.take,
+        }
+
+        response = requests.get(
+            self.base_url,
+            params=params,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+
+        response.raise_for_status()
+        return response.json()
+
+    def _parse_records(
+        self,
+        raw_response: Any,
+    ) -> list[dict[str, Any]]:
+        """
+        Convert grouped MISO notification response into source-native records.
+        """
+        records: list[dict[str, Any]] = []
+
+        for group in raw_response:
+            topic = group.get("topic")
+            notifications = group.get("notifications", [])
+
+            for notification in notifications:
+                records.append(
+                    {
+                        "topic": topic,
+                        "notification": notification,
+                    }
+                )
+
+        return records
+
+    def _html_to_text(
+        self,
+        html: str,
+    ) -> str:
+        return BeautifulSoup(
+            html,
+            "html.parser",
+        ).get_text(" ", strip=True)
+
+    def _build_url(
+        self,
+        notification: dict[str, Any],
+    ) -> str | None:
         link = notification.get("permanentLinkUrl")
 
         if not link:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+import aiohttp
 import pandas as pd
 
 import eml_transformer.ingestion.sources  # noqa: F401
@@ -11,7 +13,19 @@ from eml_transformer.ingestion.registry import create_source
 from eml_transformer.storage.paths import StoragePaths
 from eml_transformer.storage.storage import Storage
 
+from eml_transformer.extraction.scraper import (
+    ArticleScraperConfig,
+    HybridArticleScraper,
+)
+
 logger = logging.getLogger(__name__)
+
+
+NON_RETRYABLE_STATUSES = {
+    "success",
+    "forbidden",
+    "not_found",
+}
 
 
 @dataclass
@@ -63,10 +77,7 @@ class ScrapingPipeline:
         self,
         source_configs: dict[str, dict],
     ) -> list[ScrapingResult]:
-        logger.info(
-            "Starting scraping for %s sources",
-            len(source_configs),
-        )
+        logger.info("Starting scraping for %s sources", len(source_configs))
 
         results = []
 
@@ -107,8 +118,14 @@ class ScrapingPipeline:
             self.DEFAULT_OUTPUT_ARTIFACT,
         )
 
+        input_key: str | None = None
+        output_key: str | None = None
+
         try:
-            source = create_source(source_name, **source_kwargs)
+            source = create_source(
+                source_name,
+                **source_kwargs.get("ingestion", {}),
+            )
 
             input_key = self.paths.silver_records(
                 source=source.name,
@@ -128,12 +145,6 @@ class ScrapingPipeline:
             )
 
             if not self.storage.exists(input_key):
-                logger.warning(
-                    "No scraping input found | source=%s | input=%s",
-                    source.name,
-                    input_key,
-                )
-
                 return ScrapingResult(
                     status="skipped",
                     source=source.name,
@@ -146,15 +157,9 @@ class ScrapingPipeline:
                     error=f"No scraping input found: {input_key}",
                 )
 
-            input_df = self.storage.read(input_key)
+            input_df = self.storage.read_parquet(input_key)
 
             if input_df.empty:
-                logger.warning(
-                    "Scraping input is empty | source=%s | input=%s",
-                    source.name,
-                    input_key,
-                )
-
                 return ScrapingResult(
                     status="skipped",
                     source=source.name,
@@ -168,23 +173,58 @@ class ScrapingPipeline:
                     error="Scraping input is empty",
                 )
 
-            # output_df = self._scrape_dataframe(
-            #     df=input_df,
-            #     source=source,
-            #     source_kwargs=source_kwargs,
-            # )
-            output_df = None
+            existing_df = self._load_existing_output(output_key)
 
-            self.storage.write(
-                key=output_key,
-                df=output_df,
+            to_scrape_df = self._select_records_to_scrape(
+                input_df=input_df,
+                existing_df=existing_df,
+            )
+
+            if to_scrape_df.empty:
+                return ScrapingResult(
+                    status="up_to_date",
+                    source=source.name,
+                    input_artifact=input_artifact,
+                    output_artifact=output_artifact,
+                    records_read=len(input_df),
+                    records_out=len(existing_df),
+                    input_key=input_key,
+                    output_key=output_key,
+                    records=existing_df,
+                )
+
+            scraped_df = asyncio.run(
+                self._scrape_dataframe_async(
+                    df=to_scrape_df,
+                    scraping_config=scraping_config,
+                )
+            )
+
+            final_df = pd.concat(
+                [existing_df, scraped_df],
+                ignore_index=True,
+            )
+
+            final_df = (
+                final_df
+                .drop_duplicates(subset=["record_id"], keep="last")
+                .reset_index(drop=True)
+            )
+
+            self.storage.write_parquet(final_df, output_key)
+
+            records_failed = (
+                int(final_df["scrape_status"].ne("success").sum())
+                if "scrape_status" in final_df.columns
+                else 0
             )
 
             logger.info(
-                "Scraping complete | source=%s | read=%s | out=%s | output=%s",
+                "Scraping complete | source=%s | read=%s | scraped=%s | total=%s | output=%s",
                 source.name,
                 len(input_df),
-                len(output_df),
+                len(scraped_df),
+                len(final_df),
                 output_key,
             )
 
@@ -194,17 +234,15 @@ class ScrapingPipeline:
                 input_artifact=input_artifact,
                 output_artifact=output_artifact,
                 records_read=len(input_df),
-                records_out=len(output_df),
+                records_out=len(final_df),
+                records_failed=records_failed,
                 input_key=input_key,
                 output_key=output_key,
-                records=output_df,
+                records=final_df,
             )
 
         except Exception as exc:
-            logger.exception(
-                "Scraping failed | source=%s",
-                source_name,
-            )
+            logger.exception("Scraping failed | source=%s", source_name)
 
             return ScrapingResult(
                 status="failed",
@@ -214,8 +252,74 @@ class ScrapingPipeline:
                 records_read=0,
                 records_out=0,
                 records_failed=0,
-                input_key=None,
-                output_key=None,
+                input_key=input_key,
+                output_key=output_key,
                 error=str(exc),
             )
 
+    async def _scrape_dataframe_async(
+        self,
+        df: pd.DataFrame,
+        scraping_config: dict[str, Any],
+    ) -> pd.DataFrame:
+        request_timeout = scraping_config.get("request_timeout", 15)
+        playwright_timeout = scraping_config.get("playwright_timeout", 30_000)
+
+        scraper = HybridArticleScraper(
+            ArticleScraperConfig(
+                request_timeout=request_timeout,
+                playwright_timeout=playwright_timeout,
+                fallback_on_forbidden=True,
+            )
+        )
+
+        rows = []
+
+        async with aiohttp.ClientSession() as session:
+            for _, record in df.iterrows():
+                record_dict = record.to_dict()
+
+                result = await scraper.scrape(
+                    session=session,
+                    url=record_dict["url"],
+                )
+
+                rows.append(
+                    {
+                        **record_dict,
+                        **result,
+                    }
+                )
+
+        return pd.DataFrame(rows)
+
+    def _load_existing_output(self, output_key: str) -> pd.DataFrame:
+        if not self.storage.exists(output_key):
+            return pd.DataFrame()
+
+        return self.storage.read_parquet(output_key)
+
+    def _select_records_to_scrape(
+        self,
+        input_df: pd.DataFrame,
+        existing_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if "record_id" not in input_df.columns:
+            raise ValueError("Scraping input must contain a 'record_id' column.")
+
+        if "url" not in input_df.columns:
+            raise ValueError("Scraping input must contain a 'url' column.")
+
+        input_df = input_df.drop_duplicates(
+            subset=["record_id"],
+            keep="last",
+        ).copy()
+
+        if existing_df.empty or "record_id" not in existing_df.columns:
+            return input_df
+
+        processed_record_ids = set(existing_df["record_id"].dropna())
+
+        return input_df.loc[
+            ~input_df["record_id"].isin(processed_record_ids)
+        ].copy()

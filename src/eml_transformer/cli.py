@@ -12,6 +12,7 @@ from eml_transformer.logging import setup_logging
 from eml_transformer.pipelines.backfill_pipeline import BackfillPipeline
 from eml_transformer.pipelines.ingestion_pipeline import IngestionPipeline
 from eml_transformer.pipelines.standardization_pipeline import StandardizationPipeline
+from eml_transformer.pipelines.scraping_pipeline import ScrapingPipeline
 from eml_transformer.runtime import build_runtime
 
 load_dotenv()
@@ -112,6 +113,25 @@ def standardize(
 
     print_result_table("Standardization Results", results)
 
+@app.command("scrape")
+def scrape(
+    source: str = typer.Option("all"),
+    config: str = typer.Option("configs/dev.yaml"),
+):
+    rt = build_runtime(config)
+
+    pipeline = ScrapingPipeline(
+        storage=rt.storage,
+        paths=rt.paths,
+    )
+
+    if source.lower() == "all":
+        results = pipeline.run_all(rt.source_configs)
+    else:
+        source_config = get_source_config(source, rt.source_configs)
+        results = [pipeline.run_source(source, source_config)]
+
+    print_result_table("Scraping Results", results)
 
 @app.command()
 def embed(

@@ -43,8 +43,8 @@ class GDELTSource(TextSource):
         target_locations: set[str] | None = None,
         target_organizations: set[str] | None = None,
         min_filter_matches: int = 2,
-    ):
-       
+    ):  
+        # two themes and location or organization
         self.target_themes = {
             value.upper()
             for value in (target_themes or set())

@@ -5,16 +5,16 @@ storage:
 paths:
   root: .
 
+defaults:
+  embedding_input: records
+
 sources:
   iem_afos:
-      enabled: true
+    enabled: true
+    embedding_input: records
 
-      # Optional:
-      # If provided, only fetch this exact PIL
-      # Example: AFDIND
+    ingestion:
       pil: null
-
-      # Weather Forecast Offices
       wfos:
         - IND
         - IWX
@@ -23,8 +23,6 @@ sources:
         - LSX
         - DVN
         - DMX
-
-      # Product types
       product_types:
         - AFD
         - HWO
@@ -32,108 +30,123 @@ sources:
         - WSW
         - LSR
         - SPS
-
-      # API settings
       limit: 100
       fmt: text
       timeout: 30
 
   newsapi:
-  
     enabled: true
-    api_key_env: NEWSAPI_KEY
-    query: >
-      (
-        "Midcontinent Independent System Operator"
-        OR ERCOT
-        OR PJM
-      )
-      AND
-      (
-        electricity
-        OR grid
-        OR "power market"
-        OR transmission
-      )
-    language: en
-    page_size: 100
+    embedding_input: records
+
+    ingestion:
+      api_key_env: NEWSAPI_KEY
+      query: >
+        (
+          "Midcontinent Independent System Operator"
+          OR ERCOT
+          OR PJM
+        )
+        AND
+        (
+          electricity
+          OR grid
+          OR "power market"
+          OR transmission
+        )
+      language: en
+      page_size: 100
 
   miso_notifications:
     enabled: true
+    embedding_input: records
 
   weather_alerts:
     enabled: true
-    areas: 
-      ["IN", "IL", "MI", "OH", "KY",
-      "WI", "MN", "IA", "MO", "AR",
-      "LA", "MS", "ND", "SD"]
+    embedding_input: records
+
+    ingestion:
+      areas:
+        - IN
+        - IL
+        - MI
+        - OH
+        - KY
+        - WI
+        - MN
+        - IA
+        - MO
+        - AR
+        - LA
+        - MS
+        - ND
+        - SD
 
   gdelt:
     enabled: true
+    embedding_input: articles
 
-    target_themes:
-      - ECON_ELECTRICALGRID
-      - ENV_WINDPOWER
-      - WB_508_POWER_SYSTEMS
-      - WB_527_HYDROPOWER
-      - ENV_NUCLEARPOWER
-      - WB_511_COAL_FIRED_POWER
-      - MANMADE_DISASTER_RESTORE_POWER
-      - NATURAL_DISASTER_POWERFUL_STORM
-      - MANMADE_DISASTER__DOWNED_POWER_LINES
-      - MANMADE_DISASTER_KNOCKED_OUT_POWER
-      - WB_510_POWER_TRANSMISSION
-      - WB_1703_POWER_DISTRIBUTION
-      - ECON_NEWPOWERPLANT
+    standardization:
+      min_filter_matches: 2
+      target_themes:
+        - ECON_ELECTRICALGRID
+        - ENV_WINDPOWER
+        - WB_508_POWER_SYSTEMS
+        - WB_527_HYDROPOWER
+        - ENV_NUCLEARPOWER
+        - WB_511_COAL_FIRED_POWER
+        - MANMADE_DISASTER_RESTORE_POWER
+        - NATURAL_DISASTER_POWERFUL_STORM
+        - MANMADE_DISASTER__DOWNED_POWER_LINES
+        - MANMADE_DISASTER_KNOCKED_OUT_POWER
+        - WB_510_POWER_TRANSMISSION
+        - WB_1703_POWER_DISTRIBUTION
+        - ECON_NEWPOWERPLANT
 
-    target_organizations:
-      - MISO
-      - Midcontinent Independent System Operator
+      target_organizations:
+        - MISO
+        - Midcontinent Independent System Operator
+        - PJM
+        - SPP
+        - ERCOT
+        - NERC
+        - FERC
+        - Duke Energy
+        - American Electric Power
+        - AEP
+        - Xcel Energy
+        - Ameren
+        - DTE Energy
+        - Consumers Energy
+        - Alliant Energy
+        - Entergy
+        - CenterPoint Energy
+        - Great River Energy
+        - Dairyland Power
+        - Basin Electric
+        - Southern Company
 
-      - PJM
-      - SPP
-      - ERCOT
+      target_locations:
+        - INDIANA
+        - ILLINOIS
+        - MICHIGAN
+        - OHIO
+        - KENTUCKY
+        - WISCONSIN
+        - MINNESOTA
+        - IOWA
+        - MISSOURI
+        - ARKANSAS
+        - LOUISIANA
+        - MISSISSIPPI
+        - NORTH DAKOTA
+        - SOUTH DAKOTA
 
-      - NERC
-      - FERC
-
-      - Duke Energy
-      - American Electric Power
-      - AEP
-
-      - Xcel Energy
-      - Ameren
-      - DTE Energy
-      - Consumers Energy
-      - Alliant Energy
-      - Entergy
-      - CenterPoint Energy
-
-      - Great River Energy
-      - Dairyland Power
-      - Basin Electric
-
-      - Southern Company
-
-    target_locations:
-      - INDIANA
-      - ILLINOIS
-      - MICHIGAN
-      - OHIO
-      - KENTUCKY
-      - WISCONSIN
-      - MINNESOTA
-      - IOWA
-      - MISSOURI
-      - ARKANSAS
-      - LOUISIANA
-      - MISSISSIPPI
-      - NORTH DAKOTA
-      - SOUTH DAKOTA
-
-    min_filter_matches: 2
-
-
+    scraping:
+      enabled: true
+      input: records
+      output: articles
+      url_column: url
+      timeout: 30
 
 embeddings:
   provider: sentence_transformer

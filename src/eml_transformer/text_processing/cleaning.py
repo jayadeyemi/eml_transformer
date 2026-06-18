@@ -29,22 +29,6 @@ def remove_empty_lines(text: str) -> str:
 
     return "\n".join(lines)
 
-# def remove_boilerplate(text: str) -> str:
-#     boilerplate_patterns = [
-#         r"",
-#     ]
-
-#     for pattern in boilerplate_patterns:
-#         text = re.sub(
-#             pattern,
-#             "",
-#             text,
-#             flags=re.IGNORECASE,
-#         )
-
-#     return text
-
-
 def truncate_text(
     text: str,
     max_chars: int = 8000,

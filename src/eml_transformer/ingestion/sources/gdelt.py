@@ -5,6 +5,8 @@ import zipfile
 from io import BytesIO
 import pandas as pd 
 from datetime import datetime, timedelta
+from datetime import datetime, timezone
+import re 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -98,8 +100,60 @@ class GDELTSource(TextSource):
         return filtered_df.to_dict(orient="records")
     
 
-    def standardize_record(self, record):
-        return super().standardize_record(record)
+    def standardize_record(self, record: dict[str, Any]) -> TextRecord:
+        record_id = str(record["GKGRECORDID"])
+
+        published_at = self._parse_gdelt_timestamp(
+            record.get("DATE")
+        )
+
+        themes = [
+            theme.strip()
+            for theme in str(record.get("Themes", "")).split(";")
+            if theme.strip()
+        ]
+
+        organizations = [
+            org.strip()
+            for org in str(record.get("Organizations", "")).split(";")
+            if org.strip()
+        ]
+
+        persons = [
+            person.strip()
+            for person in str(record.get("Persons", "")).split(";")
+            if person.strip()
+        ]
+
+        locations = list(self._parse_locations(
+            record.get("Locations", "")
+        ))
+
+        return TextRecord(
+            record_id=record_id,
+            source=self.name,
+            source_type=self.source_type,
+            title=self._extract_page_title(record),
+            text="",  # article text added after scraping
+            published_at=published_at,
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+            url=record.get("DocumentIdentifier"),
+            region=locations[0] if locations else None,
+            categories=themes,
+            metadata={
+                "source_common_name": record.get("SourceCommonName"),
+                "gdelt_timestamp": record.get("GDELT_TIMESTAMP"),
+                "organizations": organizations,
+                "persons": persons,
+                "locations": locations,
+                "tone": record.get("Tone"),
+                "theme_match": record.get("theme_match"),
+                "organization_match": record.get("organization_match"),
+                "location_match": record.get("location_match"),
+                "filter_match_count": record.get("filter_match_count"),
+            },
+            raw=record,
+        )
     
     
     def _filter_records(
@@ -242,6 +296,28 @@ class GDELTSource(TextSource):
             )
         )
 
+    def _extract_page_title(self, record: dict) -> str:
+        extras = record.get("Extras", "")
+
+        match = re.search(
+            r"<PAGE_TITLE>(.*?)</PAGE_TITLE>",
+            extras,
+            flags=re.DOTALL,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+        return record.get("DocumentIdentifier", "")
+
+    def _parse_gdelt_timestamp(self, timestamp: str) -> str:
+        """
+        Convert GDELT timestamp (YYYYMMDDHHMMSS)
+        to ISO 8601 UTC string.
+        """
+        dt = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+        return dt.replace(tzinfo=timezone.utc).isoformat()
+    
     def _get_timestamps(self, from_date, to_date):
         timestamps = (
             pd.date_range(

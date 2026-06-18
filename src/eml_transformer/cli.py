@@ -139,12 +139,13 @@ def embed(
             source_configs=rt.source_configs,
         )
     else:
-        get_source_config(source, rt.source_configs)
+        source_config = get_source_config(source, rt.source_configs)
 
         results = [
             pipeline.run_source(
                 source=source,
                 embedding_config=embedding_config,
+                source_config=source_config
             )
         ]
 

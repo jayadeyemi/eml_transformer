@@ -71,7 +71,7 @@ class IngestionPipeline:
         dedupe_key: str | None = None
 
         try:
-            source = create_source(source_name, **source_kwargs)
+            source = create_source(source_name, **source_kwargs.get("ingestion", {}),)
 
             bronze_key = self.paths.bronze_records(source.name)
             dedupe_key = self.paths.dedupe_state(source.name)

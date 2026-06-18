@@ -45,14 +45,14 @@ class StoragePaths:
     def silver_records(
         self,
         source: str,
-        # ingest_date: str,
+        name: str ='records',
     ) -> str:
         return _p(
             self.root,
             "silver",
             f"source={_clean(source)}",
             # f"ingest_date={ingest_date}",
-            "records.parquet",
+            f"{_clean(name)}.parquet",
         )
 
     

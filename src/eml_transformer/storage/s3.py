@@ -171,15 +171,14 @@ class S3Storage(Storage):
     def read_jsonl(self, key: str) -> list[dict[str, Any]]:
         self._init_fs()
 
-        if not self.exists(key):
-            return []
-
         rows: list[dict[str, Any]] = []
-        with self._fs.open(self._uri(key), "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    rows.append(json.loads(line))
+
+        if self.exists(key):
+            with self._fs.open(self._uri(key), "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        rows.append(json.loads(line))
 
         for part_key in self.list(f"{key}.parts/"):
             with self._fs.open(self._uri(part_key), "r", encoding="utf-8") as f:

@@ -70,8 +70,16 @@ The `data/` folder stores local project outputs. Local runs normally use
 the same generic medallion keys start at `bronze/`, `silver/`, `gold/`, and
 `metadata/` in S3.
 
+On HPC/SLATE, keep the same logical layout and point the storage base directory
+at the shared filesystem location, for example with `SLATE_DATA_DIR` or
+`STORAGE_BASE_DIR`. A SLATE base directory containing `bronze/`, `silver/`,
+`gold/`, and `metadata/` will be read without changing the committed path
+contract.
+
 See `docs/aws_s3_layout.md` for the full AWS object layout, including GDELT,
 article fetch, manifests, restore staging, and lifecycle-managed prefixes.
+See `docs/storage_transfer.md` for guidance on file types and transfer
+aggregation when moving data between local, SLATE/HPC, and S3 filesystems.
 
 ```text
 data/

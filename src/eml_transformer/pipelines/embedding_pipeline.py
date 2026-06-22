@@ -58,10 +58,11 @@ class EmbeddingPipeline:
     ) -> list[EmbeddingResult]:
         results = []
 
-        for source in source_configs:
+        for source, source_config in source_configs.items():
             result = self.run_source(
                 source=source,
                 embedding_config=embedding_config,
+                source_config=source_config,
             )
             results.append(result)
 
@@ -71,6 +72,7 @@ class EmbeddingPipeline:
         self,
         source: str,
         embedding_config: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
     ) -> EmbeddingResult:
         model_name = embedding_config.get(
             "model",
@@ -93,7 +95,7 @@ class EmbeddingPipeline:
         )
 
         try:
-            df = self._load_source_records(source)
+            df = self._load_source_records(source, source_config or {})
             records_read = len(df)
 
             if df.empty:
@@ -235,15 +237,27 @@ class EmbeddingPipeline:
     def _load_source_records(
         self,
         source: str,
+        source_config: dict[str, Any],
     ) -> pd.DataFrame:
-        key = self.paths.silver_records(source)
+        input_artifact = source_config.get("embedding_input", "records")
+        key = self.paths.silver_records(source, name=input_artifact)
+
+        if not self.storage.exists(key):
+            logger.warning(
+                "No silver records found | source=%s | input_artifact=%s | key=%s",
+                source,
+                input_artifact,
+                key,
+            )
+            return pd.DataFrame()
 
         df = self.storage.read_parquet(key)
 
         if df.empty:
             logger.warning(
-                "No silver records found | source=%s",
+                "No silver records found | source=%s | input_artifact=%s",
                 source,
+                input_artifact,
             )
             return pd.DataFrame()
 

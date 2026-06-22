@@ -82,6 +82,13 @@ def apply_environment_overrides(cfg: dict[str, Any]) -> None:
 
     _set_from_env(storage_cfg, "bucket", "DATA_BUCKET", "S3_BUCKET")
     _set_from_env(storage_cfg, "prefix", "STORAGE_PREFIX", "S3_PREFIX")
+    _set_from_env(
+        storage_cfg,
+        "base_dir",
+        "STORAGE_BASE_DIR",
+        "SLATE_DATA_DIR",
+        "HPC_DATA_DIR",
+    )
     # When DATA_BUCKET is injected (e.g. inside AWS Batch) automatically switch
     # to S3 backend so local-default configs work correctly in cloud containers.
     if os.getenv("DATA_BUCKET") or os.getenv("S3_BUCKET"):

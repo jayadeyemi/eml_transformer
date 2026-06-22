@@ -396,15 +396,16 @@ def embed(
     if source.lower() == "all":
         results = pipeline.run_all(
             embedding_config=embedding_config,
-            source_configs=rt.source_configs,
+            source_configs=rt.embedding_source_configs,
         )
     else:
-        get_source_config(source, rt.source_configs)
+        source_config = get_source_config(source, rt.embedding_source_configs)
 
         results = [
             pipeline.run_source(
                 source=source,
                 embedding_config=embedding_config,
+                source_config=source_config,
             )
         ]
 
@@ -438,7 +439,7 @@ def run_all(
         paths=rt.paths,
     ).run_all(
         embedding_config=rt.embedding_config,
-        source_configs=rt.source_configs,
+        source_configs=rt.embedding_source_configs,
     )
 
     print_result_table("Embedding Results", embedding_results)
@@ -514,6 +515,84 @@ def service_run(
 
     if _has_failed_result(result):
         raise typer.Exit(code=1)
+
+
+@app.command("storage-aggregate-transfer")
+def storage_aggregate_transfer(
+    source_prefix: str = typer.Option(
+        ...,
+        "--source-prefix",
+        help="Storage prefix to aggregate, for example bronze/articles/batches/.",
+    ),
+    name: str = typer.Option(
+        ...,
+        "--name",
+        help="Human-readable aggregate name used in output paths.",
+    ),
+    input_format: str = typer.Option(
+        "json",
+        "--input-format",
+        help="json for .json/.jsonl/.jsonl.gz files, or parquet for parquet files.",
+    ),
+    config: str = typer.Option(DEFAULT_RUNTIME_CONFIG, "--config", "-c"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    output_prefix: str = typer.Option(
+        "transfer/aggregates",
+        "--output-prefix",
+    ),
+    manifest_prefix: str = typer.Option(
+        "manifests/transfer_aggregates",
+        "--manifest-prefix",
+    ),
+    target_rows: int = typer.Option(
+        10_000,
+        "--target-rows",
+        help="Approximate maximum rows per aggregate part.",
+    ),
+    max_files: int | None = typer.Option(
+        None,
+        "--max-files",
+        help="Limit source files for pilot runs.",
+    ),
+    envelope: bool = typer.Option(
+        True,
+        "--envelope/--flat",
+        help="Wrap JSON records with source-key provenance instead of adding flat metadata fields.",
+    ),
+):
+    from eml_transformer.storage.transfer import TransferAggregator
+
+    rt = build_runtime(config)
+    aggregator = TransferAggregator(rt.storage)
+    normalized_format = input_format.strip().lower()
+
+    if normalized_format in {"json", "jsonl", "jsonl.gz", "auto"}:
+        result = aggregator.aggregate_json_records(
+            source_prefix=source_prefix,
+            name=name,
+            run_id=run_id,
+            output_prefix=output_prefix,
+            manifest_prefix=manifest_prefix,
+            target_rows=target_rows,
+            envelope=envelope,
+            max_files=max_files,
+        )
+    elif normalized_format == "parquet":
+        result = aggregator.aggregate_parquet_records(
+            source_prefix=source_prefix,
+            name=name,
+            run_id=run_id,
+            output_prefix=output_prefix,
+            manifest_prefix=manifest_prefix,
+            target_rows=target_rows,
+            max_files=max_files,
+        )
+    else:
+        raise typer.BadParameter(
+            "input_format must be one of: json, jsonl, jsonl.gz, auto, parquet"
+        )
+
+    print_json_result("Storage Transfer Aggregate", result.to_summary())
 
 
 @app.command("gdelt-discover")

@@ -9,6 +9,7 @@ base:
     - configs/sources/newsapi.yaml
     - configs/sources/miso_notifications.yaml
     - configs/sources/iem_afos.yaml
+    - configs/sources/gdelt.yaml
 
 # Generic HPC identity. Deployments set environment-specific names.
 infra:

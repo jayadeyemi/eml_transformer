@@ -100,21 +100,19 @@ class LocalStorage(Storage):
 
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing_lines: list[bytes] = []
 
-        if path.exists():
-            with path.open("rb") as f:
-                existing_lines = f.readlines()
+        if path.exists() and path.stat().st_size > 0:
+            with path.open("rb+") as f:
+                f.seek(-1, 2)
+                last_char = f.read(1)
 
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for line in existing_lines:
-                decoded = line.decode("utf-8")
-                f.write(decoded if decoded.endswith("\n") else decoded + "\n")
+                if last_char != b"\n":
+                    f.write(b"\n")
+
+        with path.open("a", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False, default=str))
                 f.write("\n")
-        tmp.replace(path)
 
     def read_jsonl(self, key: str) -> list[dict[str, Any]]:
         path = self._path(key)

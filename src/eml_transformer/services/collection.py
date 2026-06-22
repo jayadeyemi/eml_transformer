@@ -76,14 +76,15 @@ class CollectionServiceRunner:
         if source.lower() == "all":
             results = pipeline.run_all(
                 embedding_config=embedding_config,
-                source_configs=self.runtime.source_configs,
+                source_configs=self.runtime.embedding_source_configs,
             )
         else:
-            self._source_config(source)
+            source_config = self._embedding_source_config(source)
             results = [
                 pipeline.run_source(
                     source=source,
                     embedding_config=embedding_config,
+                    source_config=source_config,
                 )
             ]
 
@@ -184,6 +185,15 @@ class CollectionServiceRunner:
             )
 
         return self.runtime.source_configs[source]
+
+    def _embedding_source_config(self, source: str) -> dict[str, Any]:
+        if source not in self.runtime.embedding_source_configs:
+            available = ", ".join(sorted(self.runtime.embedding_source_configs))
+            raise ValueError(
+                f"Unknown embedding source: {source}. Available sources: {available}"
+            )
+
+        return self.runtime.embedding_source_configs[source]
 
     def _summarize_results(self, results: Any) -> list[dict[str, Any]]:
         if results is None:

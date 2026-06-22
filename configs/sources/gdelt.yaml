@@ -4,6 +4,7 @@
 sources:
   gdelt:
     enabled: true
+    embedding_input: articles
     acquisition:
       max_files: null
       max_urls_per_run: null

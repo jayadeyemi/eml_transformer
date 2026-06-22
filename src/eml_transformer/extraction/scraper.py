@@ -293,6 +293,8 @@ class HybridArticleScraper:
             "error_message": error_message,
             "method": method,
         }
+    
+    
 
     def _extract_error(
         self,

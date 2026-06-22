@@ -13,7 +13,7 @@ from eml_transformer.logging import silence_loggers
 from eml_transformer.ingestion.registry import create_source
 from eml_transformer.storage.paths import StoragePaths
 from eml_transformer.storage.storage import Storage
-
+from eml_transformer.text_processing.cleaning import clean_text
 from tqdm.auto import tqdm
 
 from eml_transformer.extraction.scraper import (
@@ -328,10 +328,12 @@ class ScrapingPipeline:
                         url=record_dict["url"],
                     )
 
-                    return {
+                    row = {
                         **record_dict,
                         **result,
                     }
+
+                    return self._clean_scraped_record(row)
 
                 except Exception as exc:
                     logger.exception(
@@ -355,6 +357,28 @@ class ScrapingPipeline:
             rows = await asyncio.gather(*tasks)
 
         return pd.DataFrame(rows)
+    
+
+    def _clean_scraped_record(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        if record.get("scrape_status") != "success":
+            return record
+
+        record["title"] = clean_text(
+            record.get("title") or ""
+        )
+
+        record["text"] = clean_text(
+            record.get("text") or ""
+        )
+
+        record["text_length"] = len(
+            record["text"]
+        )
+
+        return record
 
     def _load_existing_output(self, output_key: str) -> pd.DataFrame:
         if not self.storage.exists(output_key):

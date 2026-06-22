@@ -35,7 +35,6 @@ dill==0.4.1
 distro==1.9.0
 dotenv==0.9.9
 einops==0.8.2
--e git+https://github.com/jackyeung99/eml_transformer.git@913e68507263fcf5d5312c104128f8043ea986d7#egg=eml_text_pipeline
 -e git+https://github.com/jackyeung99/eml_transformer.git@913e68507263fcf5d5312c104128f8043ea986d7#egg=eml_transformer
 exceptiongroup==1.3.1
 executing==2.2.1

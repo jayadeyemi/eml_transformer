@@ -144,109 +144,36 @@ class IEMAFOSSource(TextSource):
         self.limit = limit
         self.fmt = fmt
         self.timeout = timeout
-
         self.base_url = (
             "https://mesonet.agron.iastate.edu/"
             "cgi-bin/afos/retrieve.py"
         )
 
-
-    def fetch_raw(
+    def fetch_records(
         self,
         from_date: str,
         to_date: str,
     ) -> list[dict[str, Any]]:
-        responses = []
+        """
+        Public ingestion method.
 
-        for pil in self._pils_to_fetch():
-            response = requests.get(
-                self.base_url,
-                params={
-                    "pil": pil,
-                    "sdate": from_date,
-                    "edate": to_date,
-                    "limit": self.limit,
-                    "fmt": self.fmt,
-                },
-                timeout=self.timeout,
-            )
+        Returns source-native AFOS records ready to write to bronze.
+        The ingestion pipeline should call this method only.
+        """
+        raw_responses = self._fetch_raw(
+            from_date=from_date,
+            to_date=to_date,
+        )
 
-            response.raise_for_status()
-
-            text = response.text.strip()
-
-            if text and not text.startswith("ERROR:"):
-                responses.append({
-                    "pil": pil,
-                    "response": text,
-                })
-
-        return responses
-    
-
-    def parse_records(
-        self,
-        raw: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        records = []
-        seen_ids = set()
-
-        for item in raw:
-            pil = item["pil"]
-            text = item["response"]
-
-            for chunk in self._split_products(text):
-                header = self._parse_header(chunk)
-                parsed_pil = header.get("pil") or pil
-
-                try:
-                    issued_at_text, published_at = self._parse_published_at(
-                        raw_text=chunk,
-                        pil=parsed_pil,
-                    )
-                except Exception:
-                    # Option A: skip malformed records at parse stage
-                    logger.warning(
-                        "Skipping malformed AFOS record during parse | pil=%s",
-                        parsed_pil,
-                        exc_info=True,
-                    )
-                    continue
-
-                source_id = stable_hash(
-                    {
-                        "pil": parsed_pil,
-                        "office": header.get("office"),
-                        "issued_code": header.get("issued_code"),
-                        "raw_id": header.get("raw_id"),
-                        "published_at": published_at,
-                    }
-                )
-
-                if source_id in seen_ids:
-                    continue
-
-                seen_ids.add(source_id)
-
-                records.append(
-                    {
-                        "pil": parsed_pil,
-                        "raw_text": chunk,
-                        "header": header,
-                        "issued_at_text": issued_at_text,
-                        "published_at": published_at,
-                    }
-                )
-
-        return records
-
-
-
+        return self._parse_records(raw_responses)
 
     def standardize_record(
         self,
         record: dict[str, Any],
     ) -> TextRecord:
+        """
+        Convert one bronze/source-native AFOS record into the common TextRecord schema.
+        """
         pil = record["pil"]
         raw_text = record["raw_text"]
 
@@ -263,25 +190,19 @@ class IEMAFOSSource(TextSource):
             )
 
         product_type = pil[:3]
-        office = header.get("office")
-
-        if not office:
-            office = pil[3:] if len(pil) >= 6 else None
-
-        if not office:
-            raise ValueError(f"Could not determine office for PIL={pil}")
+        office = self._resolve_office(
+            pil=pil,
+            header=header,
+        )
 
         key_messages = sections.get("KEY MESSAGES")
         short_term = sections.get("SHORT TERM")
 
-        text = "\n\n".join(
-            part.strip()
-            for part in [key_messages, short_term]
-            if isinstance(part, str) and part.strip()
+        text = self._build_text(
+            key_messages=key_messages,
+            short_term=short_term,
+            raw_text=raw_text,
         )
-
-        if not text:
-            text = raw_text.strip()
 
         record_id = stable_hash(
             {
@@ -327,7 +248,7 @@ class IEMAFOSSource(TextSource):
             },
             raw=raw_text,
         )
-    
+
     def get_checkpoint_value(
         self,
         record: dict[str, Any],
@@ -352,7 +273,119 @@ class IEMAFOSSource(TextSource):
             )
 
         return dt.astimezone(timezone.utc)
-    
+
+    def _fetch_raw(
+        self,
+        from_date: str,
+        to_date: str,
+    ) -> list[dict[str, Any]]:
+        """
+        AFOS-specific download helper.
+
+        Not called by the pipeline directly.
+        """
+        responses: list[dict[str, Any]] = []
+
+        for pil in self._pils_to_fetch():
+            response = requests.get(
+                self.base_url,
+                params={
+                    "pil": pil,
+                    "sdate": from_date,
+                    "edate": to_date,
+                    "limit": self.limit,
+                    "fmt": self.fmt,
+                },
+                timeout=self.timeout,
+            )
+
+            response.raise_for_status()
+
+            text = response.text.strip()
+
+            if text and not text.startswith("ERROR:"):
+                responses.append(
+                    {
+                        "pil": pil,
+                        "response": text,
+                    }
+                )
+
+        return responses
+
+    def _parse_records(
+        self,
+        raw_responses: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        AFOS-specific parse helper.
+
+        Converts raw AFOS response text into source-native records for bronze.
+        """
+        records: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for item in raw_responses:
+            pil = item["pil"]
+            text = item["response"]
+
+            for chunk in self._split_products(text):
+                header = self._parse_header(chunk)
+                parsed_pil = header.get("pil") or pil
+
+                try:
+                    issued_at_text, published_at = self._parse_published_at(
+                        raw_text=chunk,
+                        pil=parsed_pil,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Skipping malformed AFOS record during parse | pil=%s",
+                        parsed_pil,
+                        exc_info=True,
+                    )
+                    continue
+
+                source_id = self._make_source_record_id(
+                    pil=parsed_pil,
+                    header=header,
+                    published_at=published_at,
+                )
+
+                if source_id in seen_ids:
+                    continue
+
+                seen_ids.add(source_id)
+
+                records.append(
+                    {
+                        "source_id": source_id,
+                        "pil": parsed_pil,
+                        "raw_text": chunk,
+                        "header": header,
+                        "issued_at_text": issued_at_text,
+                        "published_at": published_at,
+                    }
+                )
+
+        return records
+
+    def _make_source_record_id(
+        self,
+        pil: str,
+        header: dict[str, str | None],
+        published_at: str,
+    ) -> str:
+        return stable_hash(
+            {
+                "pil": pil,
+                "office": header.get("office"),
+                "issued_code": header.get("issued_code"),
+                "raw_id": header.get("raw_id"),
+                "published_at": published_at,
+            }
+        )
+
     def _parse_published_at(
         self,
         raw_text: str,
@@ -395,10 +428,8 @@ class IEMAFOSSource(TextSource):
                 f"{published_at!r}"
             )
 
-        published_at = parsed_dt.astimezone(timezone.utc).isoformat()
+        return issued_at_text or "", parsed_dt.astimezone(timezone.utc).isoformat()
 
-        return issued_at_text or "", published_at
-    
     def _pils_to_fetch(self) -> list[str]:
         if self.pil:
             return [self.pil]
@@ -414,21 +445,14 @@ class IEMAFOSSource(TextSource):
         raw: str,
     ) -> list[str]:
         text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
-
         matches = list(self.HEADER_RE.finditer(text))
 
         records = []
 
         for i, match in enumerate(matches):
             start = match.start()
-
-            if i + 1 < len(matches):
-                end = matches[i + 1].start()
-            else:
-                end = len(text)
-
-            chunk = text[start:end].strip()
-            records.append(chunk)
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            records.append(text[start:end].strip())
 
         return records
 
@@ -471,11 +495,9 @@ class IEMAFOSSource(TextSource):
 
         for match in self.SECTION_RE.finditer(text):
             section = match.group("section").strip()
-            content = match.group("content").strip()
-
             section = re.sub(r"\s+", " ", section)
 
-            sections[section] = content
+            sections[section] = match.group("content").strip()
 
         return sections
 
@@ -501,7 +523,34 @@ class IEMAFOSSource(TextSource):
 
         return None
 
+    def _resolve_office(
+        self,
+        pil: str,
+        header: dict[str, str | None],
+    ) -> str:
+        office = header.get("office")
 
+        if not office:
+            office = pil[3:] if len(pil) >= 6 else None
+
+        if not office:
+            raise ValueError(f"Could not determine office for PIL={pil}")
+
+        return office
+
+    def _build_text(
+        self,
+        key_messages: str | None,
+        short_term: str | None,
+        raw_text: str,
+    ) -> str:
+        text = "\n\n".join(
+            part.strip()
+            for part in [key_messages, short_term]
+            if isinstance(part, str) and part.strip()
+        )
+
+        return text if text else raw_text.strip()
 
     def _make_title(
         self,

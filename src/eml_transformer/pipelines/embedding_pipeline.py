@@ -62,7 +62,11 @@ class EmbeddingPipeline:
             result = self.run_source(
                 source=source,
                 embedding_config=embedding_config,
+<<<<<<< HEAD
                 source_config=source_config,
+=======
+                source_config=source_configs[source],
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
             )
             results.append(result)
 
@@ -72,7 +76,11 @@ class EmbeddingPipeline:
         self,
         source: str,
         embedding_config: dict[str, Any],
+<<<<<<< HEAD
         source_config: dict[str, Any] | None = None,
+=======
+        source_config: dict[str, Any],
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
     ) -> EmbeddingResult:
         model_name = embedding_config.get(
             "model",
@@ -95,7 +103,11 @@ class EmbeddingPipeline:
         )
 
         try:
+<<<<<<< HEAD
             df = self._load_source_records(source, source_config or {})
+=======
+            df = self._load_source_records(source, source_config)
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
             records_read = len(df)
 
             if df.empty:
@@ -240,6 +252,7 @@ class EmbeddingPipeline:
         source_config: dict[str, Any],
     ) -> pd.DataFrame:
         input_artifact = source_config.get("embedding_input", "records")
+<<<<<<< HEAD
         key = self.paths.silver_records(source, name=input_artifact)
 
         if not self.storage.exists(key):
@@ -250,6 +263,13 @@ class EmbeddingPipeline:
                 key,
             )
             return pd.DataFrame()
+=======
+
+        key = self.paths.silver_records(
+            source=source,
+            name=input_artifact,
+        )
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
 
         df = self.storage.read_parquet(key)
 

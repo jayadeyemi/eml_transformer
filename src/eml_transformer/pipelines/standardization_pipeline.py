@@ -84,7 +84,7 @@ class StandardizationPipeline:
         )
 
         try:
-            source = create_source(source_name, **source_kwargs)
+            source = create_source(source_name, **source_kwargs.get("standardization", {}),)
 
             bronze_key = self.paths.bronze_records(
                 source=source.name,
@@ -132,6 +132,7 @@ class StandardizationPipeline:
                     text_record = self._clean_record(
                         text_record,
                     )
+    
 
                     records.append(text_record)
 
@@ -142,6 +143,8 @@ class StandardizationPipeline:
                         "Failed to standardize record | source=%s",
                         source.name,
                     )
+
+
 
             df = self._records_to_dataframe(records)
             before_dedupe = len(df)
@@ -201,19 +204,6 @@ class StandardizationPipeline:
                 silver_key=silver_key,
             )
 
-    def _clean_record(
-        self,
-        record: TextRecord,
-    ) -> TextRecord:
-        record.title = clean_text(
-            record.title or "",
-        )
-
-        record.text = clean_text(
-            record.text or "",
-        )
-
-        return record
 
     def _records_to_dataframe(
         self,
@@ -233,6 +223,20 @@ class StandardizationPipeline:
                 rows.append(record)
 
         return pd.DataFrame(rows).sort_values(by=['published_at'])
+
+    def _clean_record(
+        self,
+        record: TextRecord,
+    ) -> TextRecord:
+        record.title = clean_text(
+            record.title or "",
+        )
+
+        record.text = clean_text(
+            record.text or "",
+        )
+
+        return record
 
     def _deduplicate(
         self,

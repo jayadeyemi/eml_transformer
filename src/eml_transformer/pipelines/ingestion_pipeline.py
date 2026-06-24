@@ -52,14 +52,14 @@ class IngestionPipeline:
         source_configs: dict[str, dict],
     ) -> list[IngestionResult]:
         return [
-            self.run_source(source_name, source_kwargs)
-            for source_name, source_kwargs in source_configs.items()
+            self.run_source(source_name, source_config)
+            for source_name, source_config in source_configs.items()
         ]
 
     def run_source(
         self,
         source_name: str,
-        source_kwargs: dict[str, Any],
+        source_config: dict[str, Any],
         from_date: str | None = None,
         to_date: str | None = None,
         update_checkpoint: bool = True,
@@ -71,7 +71,7 @@ class IngestionPipeline:
         dedupe_key: str | None = None
 
         try:
-            source = create_source(source_name, **source_kwargs)
+            source = create_source(source_name, **source_config.get("ingestion", {}),)
 
             bronze_key = self.paths.bronze_records(source.name)
             dedupe_key = self.paths.dedupe_state(source.name)
@@ -105,12 +105,10 @@ class IngestionPipeline:
                 to_date,
             )
 
-            raw = source.fetch_raw(
+            raw_records = source.fetch_records(
                 from_date=effective_from_date,
                 to_date=to_date,
             )
-
-            raw_records = source.parse_records(raw)
 
             seen_hashes = self._load_seen(dedupe_key)
             bronze_rows = []

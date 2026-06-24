@@ -14,20 +14,21 @@ class TextSource(ABC):
     """
     Base class for textual ingestion sources.
     """
-
     name: str
     source_type: str
 
     @abstractmethod
-    def fetch_raw(self) -> Any:
-        pass
-
-    @abstractmethod
-    def parse_records(self, raw: Any) -> list[dict[str, Any]]:
+    def fetch_records(self) -> Any:
+        '''
+        Retrieve raw records with light pre processing and store in bronze/
+        '''
         pass
 
     @abstractmethod
     def standardize_record(self, record: dict[str, Any]) -> TextRecord:
+        '''
+        format raw records into standardized Textrecord data class store in silver/
+        '''
         pass
 
     def validate_schema(self, df: pd.DataFrame) -> None:
@@ -41,26 +42,6 @@ class TextSource(ABC):
                 f"{self.name} missing required columns: {missing}"
             )
 
-    def run(self) -> pd.DataFrame:
-        raw = self.fetch_raw()
-        parsed = self.parse_records(raw)
-
-        records = [
-            self.standardize_record(record).to_dict()
-            for record in parsed
-        ]
-
-        df = pd.DataFrame(records)
-
-        for col in TEXT_RECORD_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
-
-        df = df[TEXT_RECORD_COLUMNS]
-
-        self.validate_schema(df)
-
-        return df
     
     def _make_record_id(
         self,

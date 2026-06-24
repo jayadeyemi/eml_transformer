@@ -4,7 +4,7 @@ from pathlib import Path
 import logging
 import sys
 from typing import Optional
-
+from contextlib import contextmanager
 
 _LOG_FORMAT = (
     "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
@@ -68,3 +68,19 @@ def get_logger(name: str) -> logging.Logger:
     directly, so behavior is consistent across the project.
     """
     return logging.getLogger(name)
+
+
+@contextmanager
+def silence_loggers(*logger_names: str):
+    loggers = [logging.getLogger(name) for name in logger_names]
+    original_levels = [logger.level for logger in loggers]
+
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.WARNING)
+
+        yield
+
+    finally:
+        for logger, level in zip(loggers, original_levels):
+            logger.setLevel(level)

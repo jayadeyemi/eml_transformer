@@ -5,16 +5,16 @@ storage:
 paths:
   root: .
 
+defaults:
+  embedding_input: records
+
 sources:
   iem_afos:
-      enabled: true
+    enabled: true
+    embedding_input: records
 
-      # Optional:
-      # If provided, only fetch this exact PIL
-      # Example: AFDIND
+    ingestion:
       pil: null
-
-      # Weather Forecast Offices
       wfos:
         - IND
         - IWX
@@ -23,8 +23,6 @@ sources:
         - LSX
         - DVN
         - DMX
-
-      # Product types
       product_types:
         - AFD
         - HWO
@@ -32,45 +30,158 @@ sources:
         - WSW
         - LSR
         - SPS
-
-      # API settings
       limit: 100
       fmt: text
       timeout: 30
 
   newsapi:
     enabled: true
-    api_key_env: NEWSAPI_KEY
-    query: >
-      (
-        "Midcontinent Independent System Operator"
-        OR ERCOT
-        OR PJM
-      )
-      AND
-      (
-        electricity
-        OR grid
-        OR "power market"
-        OR transmission
-      )
-    language: en
-    page_size: 100
+    embedding_input: records
+
+    ingestion:
+      api_key_env: NEWSAPI_KEY
+      query: >
+        (
+          "Midcontinent Independent System Operator"
+          OR ERCOT
+          OR PJM
+        )
+        AND
+        (
+          electricity
+          OR grid
+          OR "power market"
+          OR transmission
+        )
+      language: en
+      page_size: 100
 
   miso_notifications:
     enabled: true
+    embedding_input: records
 
   weather_alerts:
     enabled: true
+<<<<<<< HEAD
     areas:
       ["IN", "IL", "MI", "OH", "KY",
       "WI", "MN", "IA", "MO", "AR",
       "LA", "MS", "ND", "SD"]
+=======
+    embedding_input: records
+
+    ingestion:
+      areas:
+        - IN
+        - IL
+        - MI
+        - OH
+        - KY
+        - WI
+        - MN
+        - IA
+        - MO
+        - AR
+        - LA
+        - MS
+        - ND
+        - SD
+
+  gdelt:
+    enabled: true
+    embedding_input: articles
+
+    ingestion:
+      min_filter_matches: 2
+      target_themes:
+        -NATURAL_DISASTER_EXTREME_WEATHER,
+        -NATURAL_DISASTER_SEVERE_WEATHER,
+        -NATURAL_DISASTER_FLOODING,
+        -NATURAL_DISASTER_HURRICANE,
+        -NATURAL_DISASTER_TORNADO,
+        -NATURAL_DISASTER_WILDFIRE,
+        -POWER_OUTAGE,
+        -MANMADE_DISASTER_POWER_OUTAGE,
+        -MANMADE_DISASTER_POWER_OUTAGES,
+        -MANMADE_DISASTER_WITHOUT_POWER,
+        -MANMADE_DISASTER_WITHOUT_ELECTRICITY,
+        -ECON_ELECTRICALGRID,
+        -ENV_WINDPOWER,
+        -WB_508_POWER_SYSTEMS,
+        -WB_527_HYDROPOWER,
+        -ENV_NUCLEARPOWER,
+        -WB_515_POWER_SECTOR_POLICY_AND_INSTITUTIONS,
+        -MANMADE_DISASTER_POWER_FAILURE,
+        -WB_511_COAL_FIRED_POWER,
+        -WB_1753_GAS_TO_POWER,
+        -WB_513_OIL_FIRED_POWER,
+        -MANMADE_DISASTER_RESTORE_POWER,
+        -NATURAL_DISASTER_POWERFUL_STORM,
+        -MANMADE_DISASTER_DOWNED_POWER_LINES,
+        -MANMADE_DISASTER_KNOCKED_OUT_POWER,
+        -WB_510_POWER_TRANSMISSION,
+        -WB_1703_POWER_DISTRIBUTION,
+        -ECON_NEWPOWERPLANT
+        -MANMADE_DISASTER_POWER_FAILURES,
+        -WB_526_RENEWABLE_ENERGY_POLICY_AND_REGULATION,
+        -WB_1757_ENERGY_FINANCE,
+        -WB_1033_SOLAR_POWER_LAW_AND_REGULATION,
+        -WB_1871_HYDROPOWER_LAW_AND_REGULATION,
+        -WB_1034_WIND_POWER_LAW_AND_REGULATION
+
+      target_organizations:
+        - MISO
+        - Midcontinent Independent System Operator
+        - PJM
+        - SPP
+        - ERCOT
+        - NERC
+        - FERC
+        - Duke Energy
+        - American Electric Power
+        - AEP
+        - Xcel Energy
+        - Ameren
+        - DTE Energy
+        - Consumers Energy
+        - Alliant Energy
+        - Entergy
+        - CenterPoint Energy
+        - Great River Energy
+        - Dairyland Power
+        - Basin Electric
+        - Southern Company
+
+      target_locations:
+        - USIN
+        - USIL
+        - USMI
+        - USOH
+        - USKY
+        - USWI
+        - USMN
+        - USIA
+        - USMO
+        - USAR
+        - USLA
+        - USMS
+        - USND
+        - USSD
+
+    scraping:
+      enabled: true
+      input: records
+      output: articles
+      url_column: url
+      timeout: 30
+      batch_size: 100
+      max_concurrency: 5
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
 
 embeddings:
   provider: sentence_transformer
   model: nvidia/llama-nemotron-embed-vl-1b-v2
-  batch_size: 16
+  batch_size: 32
   device: cuda
   normalize_embeddings: true
   trust_remote_code: true

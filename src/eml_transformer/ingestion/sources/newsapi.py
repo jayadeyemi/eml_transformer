@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -7,9 +10,8 @@ from eml_transformer.ingestion.base import TextSource
 from eml_transformer.ingestion.registry import register_source
 from eml_transformer.ingestion.schema import TextRecord
 
-
-import logging
 logger = logging.getLogger(__name__)
+
 
 @register_source("newsapi")
 class NewsAPISource(TextSource):
@@ -53,15 +55,17 @@ class NewsAPISource(TextSource):
             "User-Agent": "eml-transformer-research",
         }
 
-    def fetch_page(
+    def fetch_records(
         self,
-        page: int,
         from_date: str | None = None,
         to_date: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         """
-        Fetch one page from NewsAPI.
+        Public ingestion method.
+
+        Returns source-native NewsAPI article records ready to write to bronze.
         """
+<<<<<<< HEAD
         if not self.api_key:
             raise EnvironmentError("Missing required environment variable: NEWSAPI_KEY")
 
@@ -88,71 +92,14 @@ class NewsAPISource(TextSource):
             params=params,
             headers=self.headers,
             timeout=self.timeout,
+=======
+        raw_response = self._fetch_raw(
+            from_date=from_date,
+            to_date=to_date,
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456
         )
 
-        response.raise_for_status()
-        return response.json()
-
-    def fetch_raw(
-        self,
-        from_date: str | None = None,
-        to_date: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Fetch all configured pages for either:
-        - normal incremental ingestion
-        - explicit date-window backfills
-        """
-
-        all_articles: list[dict[str, Any]] = []
-        total_results: int | None = None
-
-        effective_from_date = from_date or self.from_date
-        effective_to_date = to_date or self.to_date
-
-        for page in range(1, self.max_pages + 1):
-            raw = self.fetch_page(
-                page=page,
-                from_date=effective_from_date,
-                to_date=effective_to_date,
-            )
-
-            if raw.get("status") != "ok":
-                raise RuntimeError(
-                    f"NewsAPI request failed: {raw}"
-                )
-
-            if total_results is None:
-                total_results = raw.get("totalResults")
-
-            articles = raw.get("articles", [])
-
-            if not articles:
-                break
-
-            all_articles.extend(articles)
-
-            if len(articles) < self.page_size:
-                break
-
-            if total_results and len(all_articles) >= total_results:
-                break
-
-        return {
-            "status": "ok",
-            "totalResults": total_results or len(all_articles),
-            "articles": all_articles,
-            "query": self.query,
-            "from": effective_from_date,
-            "to": effective_to_date,
-        }
-
-    def parse_records(self, raw: Any) -> list[dict[str, Any]]:
-        """
-        Extract article records from the raw NewsAPI response.
-        """
-
-        return raw.get("articles", [])
+        return self._parse_records(raw_response)
 
     def standardize_record(
         self,
@@ -185,7 +132,7 @@ class NewsAPISource(TextSource):
             title=title,
             text=text,
             published_at=published_at,
-            retrieved_at=datetime.now(timezone.utc),
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
             url=url,
             region=None,
             categories=["news"],
@@ -199,9 +146,104 @@ class NewsAPISource(TextSource):
             },
             raw=article,
         )
-    
+
     def get_checkpoint_value(
         self,
         raw_record: dict[str, Any],
     ) -> str | None:
         return raw_record.get("publishedAt")
+<<<<<<< HEAD
+=======
+
+    def _fetch_raw(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Fetch all configured NewsAPI pages.
+        """
+        all_articles: list[dict[str, Any]] = []
+        total_results: int | None = None
+
+        effective_from_date = from_date or self.from_date
+        effective_to_date = to_date or self.to_date
+
+        for page in range(1, self.max_pages + 1):
+            raw_page = self._fetch_page(
+                page=page,
+                from_date=effective_from_date,
+                to_date=effective_to_date,
+            )
+
+            if raw_page.get("status") != "ok":
+                raise RuntimeError(f"NewsAPI request failed: {raw_page}")
+
+            if total_results is None:
+                total_results = raw_page.get("totalResults")
+
+            articles = raw_page.get("articles", [])
+
+            if not articles:
+                break
+
+            all_articles.extend(articles)
+
+            if len(articles) < self.page_size:
+                break
+
+            if total_results and len(all_articles) >= total_results:
+                break
+
+        return {
+            "status": "ok",
+            "totalResults": total_results or len(all_articles),
+            "articles": all_articles,
+            "query": self.query,
+            "from": effective_from_date,
+            "to": effective_to_date,
+        }
+
+    def _parse_records(
+        self,
+        raw_response: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Extract article records from the raw NewsAPI response.
+        """
+        return raw_response.get("articles", [])
+
+    def _fetch_page(
+        self,
+        page: int,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Fetch one NewsAPI page.
+        """
+        params: dict[str, Any] = {
+            "q": self.query,
+            "language": self.language,
+            "sortBy": self.sort_by,
+            "pageSize": self.page_size,
+            "page": page,
+            "apiKey": self.api_key,
+        }
+
+        if from_date:
+            params["from"] = from_date
+
+        if to_date:
+            params["to"] = to_date
+
+        response = requests.get(
+            self.base_url,
+            params=params,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+
+        response.raise_for_status()
+        return response.json()
+>>>>>>> c941e2473b28ab31e2d773e3333b64827fb2d456

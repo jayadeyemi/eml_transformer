@@ -1,9 +1,9 @@
-import os
-import sys
-import unittest
-import shutil
+import copy
 import json
 import os
+import shutil
+import sys
+import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -213,6 +213,7 @@ class CdkStackTests(unittest.TestCase):
                     if resource["Type"] == "AWS::Batch::JobDefinition"
                 ]
                 for properties in job_definitions:
+                    self.assertTrue(properties.get("PropagateTags"))
                     env_names = {
                         item["Name"]
                         for item in properties["ContainerProperties"].get("Environment", [])
@@ -223,6 +224,98 @@ class CdkStackTests(unittest.TestCase):
                     self.assertFalse(
                         any(name.startswith("BATCH_JOB_DEFINITION_") for name in env_names)
                     )
+
+                budgets = [
+                    resource["Properties"]["Budget"]
+                    for resource in template_json["Resources"].values()
+                    if resource["Type"] == "AWS::Budgets::Budget"
+                ]
+                expects_budget = (
+                    float(loaded.config.get("cost", {}).get("monthly_budget_usd", 0)) > 0
+                    and bool(loaded.config.get("cost", {}).get("alert_emails", []))
+                )
+                self.assertEqual(len(budgets), int(expects_budget))
+                if expects_budget:
+                    stack_name = loaded.config["infra"]["stack_name"]
+                    self.assertEqual(budgets[0]["Metrics"], ["UnblendedCost"])
+                    self.assertNotIn("CostFilters", budgets[0])
+                    self.assertEqual(
+                        budgets[0]["FilterExpression"],
+                        {
+                            "Tags": {
+                                "Key": "user:infra_stack",
+                                "MatchOptions": ["EQUALS"],
+                                "Values": [stack_name],
+                            }
+                        },
+                    )
+
+    @unittest.skipIf(App is None, "aws-cdk-lib or Node.js is not installed")
+    def test_cost_controls_are_scoped_to_deployment_tag(self):
+        cdk_root = repo_root() / "infra" / "cdk"
+        sys.path.insert(0, str(cdk_root))
+
+        from eml_transformer_cdk.stack import EmlTransformerCollectionStack
+
+        loaded = load_deployment_config("configs/deployments/aws-smoke.yaml")
+        config = copy.deepcopy(loaded.config)
+        config["cost"]["monthly_budget_usd"] = 10
+        config["cost"]["alert_emails"] = ["alerts@example.com"]
+        config["cost"]["cost_anomaly_detection"] = True
+
+        with patch.dict(os.environ, runtime_secret_env(loaded)):
+            app = App()
+            stack = EmlTransformerCollectionStack(
+                app,
+                "CostScopedStack",
+                deployment_config=config,
+            )
+            template = Template.from_stack(stack)
+
+        template_json = template.to_json()
+        stack_name = config["infra"]["stack_name"]
+
+        template.has_resource_properties(
+            "AWS::Budgets::Budget",
+            {
+                "Budget": {
+                    "BudgetName": f"{stack_name}-monthly",
+                    "FilterExpression": {
+                        "Tags": {
+                            "Key": "user:infra_stack",
+                            "MatchOptions": ["EQUALS"],
+                            "Values": [stack_name],
+                        }
+                    },
+                    "Metrics": ["UnblendedCost"],
+                }
+            },
+        )
+
+        template.has_resource_properties(
+            "AWS::CE::AnomalyMonitor",
+            {
+                "MonitorName": f"{stack_name}-service-costs",
+                "MonitorType": "CUSTOM",
+                "MonitorSpecification": json.dumps(
+                    {
+                        "Tags": {
+                            "Key": "infra_stack",
+                            "Values": [stack_name],
+                        }
+                    },
+                    sort_keys=True,
+                ),
+            },
+        )
+
+        monitors = [
+            resource["Properties"]
+            for resource in template_json["Resources"].values()
+            if resource["Type"] == "AWS::CE::AnomalyMonitor"
+        ]
+        self.assertEqual(len(monitors), 1)
+        self.assertNotIn("MonitorDimension", monitors[0])
 
 
 if __name__ == "__main__":

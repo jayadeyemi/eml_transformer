@@ -62,6 +62,17 @@ Dev schedules are disabled by default. The dev deployment keeps log retention at
 matrix reports service topology, runtime environment keys, and job-definition
 mappings; it does not calculate a monthly cost estimate.
 
+CDK tags every deployment resource with `infra_stack=<stack_name>`. AWS Budgets
+created by the stack are filtered to `user:infra_stack=<stack_name>`, so each
+deployment budget tracks only resources carrying that deployment tag. Batch job
+definitions propagate those tags to the Fargate tasks they launch so runtime
+compute is attributable to the same deployment.
+
+AWS Billing must have the user-defined cost allocation tag `infra_stack`
+activated before tag-filtered budgets and anomaly monitors can report those
+tagged costs. Until activation finishes propagating in AWS Billing, the budget
+resource exists but its spend attribution can lag or appear incomplete.
+
 For the shortest low-cost AWS test, select a low-capacity deployment config,
 submit one capped `gdelt_discovery` job with `--max-files 1`, then destroy the
 selected stack if you do not need the retained data resources. The full test

@@ -27,6 +27,10 @@ from eml_transformer.deployment.config import (
     build_runtime_environment,
 )
 
+DEPLOYMENT_COST_TAG_KEY = "infra_stack"
+DEPLOYMENT_BUDGET_TAG_KEY = f"user:{DEPLOYMENT_COST_TAG_KEY}"
+DEPLOYMENT_BUDGET_METRIC = "UnblendedCost"
+
 
 class EmlTransformerCollectionStack(Stack):
     def __init__(
@@ -571,6 +575,7 @@ class EmlTransformerCollectionStack(Stack):
                     attempts=int(service_cfg.get("retry_attempts", 1)),
                 ),
                 container_properties=container_properties,
+                propagate_tags=True,
             )
 
         return job_definitions
@@ -1283,6 +1288,8 @@ class EmlTransformerCollectionStack(Stack):
                         amount=budget_limit,
                         unit="USD",
                     ),
+                    filter_expression=self._deployment_budget_filter_expression(),
+                    metrics=[DEPLOYMENT_BUDGET_METRIC],
                 ),
                 notifications_with_subscribers=[
                     budgets.CfnBudget.NotificationWithSubscribersProperty(
@@ -1308,8 +1315,8 @@ class EmlTransformerCollectionStack(Stack):
                 self,
                 "CostAnomalyMonitor",
                 monitor_name=f"{self.stack_name_prefix}-service-costs",
-                monitor_type="DIMENSIONAL",
-                monitor_dimension="SERVICE",
+                monitor_type="CUSTOM",
+                monitor_specification=self._deployment_anomaly_monitor_specification(),
             )
             ce.CfnAnomalySubscription(
                 self,
@@ -1334,6 +1341,28 @@ class EmlTransformerCollectionStack(Stack):
                     }
                 },
             )
+
+    def _deployment_budget_filter_expression(
+        self,
+    ) -> budgets.CfnBudget.ExpressionProperty:
+        return budgets.CfnBudget.ExpressionProperty(
+            tags=budgets.CfnBudget.TagValuesProperty(
+                key=DEPLOYMENT_BUDGET_TAG_KEY,
+                match_options=["EQUALS"],
+                values=[self.stack_name_prefix],
+            )
+        )
+
+    def _deployment_anomaly_monitor_specification(self) -> str:
+        return json.dumps(
+            {
+                "Tags": {
+                    "Key": DEPLOYMENT_COST_TAG_KEY,
+                    "Values": [self.stack_name_prefix],
+                }
+            },
+            sort_keys=True,
+        )
 
     def _create_outputs(
         self,

@@ -27,7 +27,7 @@ network:
 
 # Overrides AWS/dev cost defaults for low-cost smoke testing.
 cost:
-  monthly_budget_usd: 5
+  monthly_budget_usd: 10
   alert_emails:
     - boadeyem@iu.edu
   allow_nat_gateway: false
